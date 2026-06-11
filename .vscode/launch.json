@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:macOS Launcher}",
+            "name": "Debug Luma",
+            "target": "Luma",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug Luma"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:macOS Launcher}",
+            "name": "Release Luma",
+            "target": "Luma",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release Luma"
+        }
+    ]
+}

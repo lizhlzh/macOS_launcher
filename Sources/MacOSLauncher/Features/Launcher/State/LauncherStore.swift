@@ -476,6 +476,23 @@ final class LauncherStore {
         return folder
     }
 
+    /// Creates a folder only from at least two unique, valid applications.
+    func createFolder(containingAppIDs appIDs: [String]) {
+        var seen = Set<String>()
+        let uniqueIDs = appIDs.filter { id in
+            guard app(withID: id) != nil else {
+                return false
+            }
+            return seen.insert(id).inserted
+        }
+
+        guard uniqueIDs.count >= 2 else {
+            return
+        }
+
+        createFolder(named: nil, containing: uniqueIDs)
+    }
+
     /// 重命名文件夹，并保持忽略大小写后的名称唯一性。
     ///
     /// - Parameters:

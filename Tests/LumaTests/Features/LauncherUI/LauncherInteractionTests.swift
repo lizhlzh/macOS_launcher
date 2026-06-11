@@ -91,7 +91,7 @@ func rootViewRoutesHeaderCoordinatesToHeaderButton() throws {
     defer { window.orderOut(nil) }
     rootView.layoutSubtreeIfNeeded()
 
-    let headerWidth = min(max(900, rootSize.width - 260), 1_450)
+    let headerWidth = min(max(960, rootSize.width - 260), 1_450)
     let controlsWidth: CGFloat = 138 + 112 + 58 * 5 + 7 * 6
     let searchWidth = max(320, headerWidth - controlsWidth - 54)
     let headerX = floor((rootSize.width - headerWidth) / 2)
@@ -132,7 +132,15 @@ func pagerHitTestingResolvesExactTileAcrossRowsAndPages() throws {
 
     let pagerSize = NSSize(width: 1_000, height: 700)
     let pager = LauncherPagerView(store: store)
-    pager.frame = NSRect(origin: .zero, size: pagerSize)
+    let window = NSWindow(
+        contentRect: NSRect(origin: .zero, size: pagerSize),
+        styleMask: [.borderless],
+        backing: .buffered,
+        defer: false
+    )
+    window.contentView = pager
+    window.orderFrontRegardless()
+    defer { window.orderOut(nil) }
     pager.layoutSubtreeIfNeeded()
 
     let metrics = LauncherGridMetrics(
@@ -149,11 +157,32 @@ func pagerHitTestingResolvesExactTileAcrossRowsAndPages() throws {
     let lowerRowTile = try #require(pager.hitTest(lowerRowPoint) as? LauncherTileView)
     #expect(lowerRowTile.tileID == "app:test.\(lowerRowIndex)")
 
+    let titlePoint = tileTitleCenter(indexOnPage: lowerRowIndex, metrics: metrics)
+    let titleTile = try #require(pager.hitTest(titlePoint) as? LauncherTileView)
+    #expect(titleTile.tileID == "app:test.\(lowerRowIndex)")
+
     store.changePage(by: 1)
     pager.setPage(index: store.pageIndex, dragOffset: 0, animated: false)
     let secondPagePoint = tileIconCenter(indexOnPage: 1, metrics: metrics)
     let secondPageTile = try #require(pager.hitTest(secondPagePoint) as? LauncherTileView)
     #expect(secondPageTile.tileID == "app:test.\(store.gridLayout.itemsPerPage + 1)")
+}
+
+private func tileTitleCenter(
+    indexOnPage: Int,
+    metrics: LauncherGridMetrics
+) -> NSPoint {
+    let row = indexOnPage / metrics.columns
+    let column = indexOnPage % metrics.columns
+    let tileX = 48 + metrics.leadingInset
+        + CGFloat(column) * (metrics.tileWidth + metrics.columnSpacing)
+    let tileY = CGFloat(row) * (metrics.tileHeight + metrics.rowSpacing)
+
+    return NSPoint(
+        x: tileX + metrics.tileWidth / 2,
+        y: tileY + metrics.tileVerticalPadding + metrics.iconSize
+            + metrics.iconTitleSpacing + metrics.titleHeight / 2
+    )
 }
 
 @MainActor

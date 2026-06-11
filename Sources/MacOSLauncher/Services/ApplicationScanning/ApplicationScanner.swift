@@ -122,33 +122,11 @@ private func appendApp(
     discovered.append(
         LauncherAppInfo(
             id: id,
-            title: localizedDisplayName(for: bundle, at: canonicalURL),
+            title: ApplicationDisplayNameResolver.displayName(for: canonicalURL, bundle: bundle),
             bundleIdentifier: bundleIdentifier,
             path: canonicalURL.path
         )
     )
-}
-
-/// 解析应用的本地化显示名称。
-///
-/// - Parameters:
-///   - bundle: 应用 Bundle；无法创建时可为 `nil`。
-///   - url: 应用包 URL，用于文件名回退。
-/// - Returns: 可展示给用户的应用名称。
-private func localizedDisplayName(for bundle: Bundle?, at url: URL) -> String {
-    let resourceName = try? url.resourceValues(forKeys: [.localizedNameKey]).localizedName
-    var fileDisplayName = nonEmpty(resourceName)
-        ?? nonEmpty(FileManager.default.displayName(atPath: url.path))
-        ?? url.deletingPathExtension().lastPathComponent
-    if fileDisplayName.lowercased().hasSuffix(".app") {
-        fileDisplayName.removeLast(4)
-    }
-
-    return nonEmpty(bundle?.localizedInfoDictionary?["CFBundleDisplayName"] as? String)
-        ?? nonEmpty(bundle?.localizedInfoDictionary?["CFBundleName"] as? String)
-        ?? nonEmpty(bundle?.infoDictionary?["CFBundleDisplayName"] as? String)
-        ?? nonEmpty(bundle?.infoDictionary?["CFBundleName"] as? String)
-        ?? fileDisplayName
 }
 
 /// 去除首尾空白，并将空字符串转换为 `nil`。

@@ -75,7 +75,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         tintView.frame = bounds
 
         let top = safeTopPadding()
-        let headerWidth = min(max(900, bounds.width - 260), 1450)
+        let headerWidth = min(max(960, bounds.width - 260), 1450)
         headerView.frame = NSRect(
             x: floor((bounds.width - headerWidth) / 2),
             y: top,
@@ -156,11 +156,6 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
 
         let headerPoint = convert(point, to: headerView)
         if headerView.bounds.contains(headerPoint) {
-            if searchField.frame.contains(headerPoint) {
-                let fieldPoint = headerView.convert(headerPoint, to: searchField)
-                return searchField.hitTest(fieldPoint) ?? searchField
-            }
-
             let controls: [NSView] = [
                 closeButton,
                 rescanButton,
@@ -176,6 +171,11 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
                 if control.bounds.contains(controlPoint) {
                     return control.hitTest(controlPoint) ?? control
                 }
+            }
+
+            if searchField.frame.contains(headerPoint) {
+                let fieldPoint = headerView.convert(headerPoint, to: searchField)
+                return searchField.hitTest(fieldPoint) ?? searchField
             }
 
             return headerView
@@ -708,10 +708,6 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
 
 extension LauncherRootView: LauncherPagerDelegate {
     func pager(_ pager: LauncherPagerView, open tile: LauncherTile) {
-        LumaEventLog.shared.write(
-            "open.root",
-            "tile=\(tile.id) title=\(tile.title) kind=\(tile.app == nil ? "folder" : "app")"
-        )
         switch tile.kind {
         case let .app(app):
             store.launchApp(app)
@@ -774,93 +770,6 @@ extension LauncherRootView: LauncherPagerDelegate {
     }
 }
 
-/// 将单行搜索文字垂直居中，并为搜索图标保留内边距的 Cell。
-final class VerticallyCenteredTextFieldCell: NSTextFieldCell {
-    private let textLayoutManager = NSLayoutManager()
-    private let leadingInset: CGFloat = 40
-    private let trailingInset: CGFloat = 8
-
-    private func centeredTextRect(in bounds: NSRect) -> NSRect {
-        guard let font else {
-            return bounds
-        }
-
-        let lineHeight = ceil(textLayoutManager.defaultLineHeight(for: font))
-        return NSRect(
-            x: bounds.minX + leadingInset,
-            y: floor(bounds.midY - lineHeight / 2),
-            width: max(0, bounds.width - leadingInset - trailingInset),
-            height: lineHeight
-        )
-    }
-
-    override func titleRect(forBounds rect: NSRect) -> NSRect {
-        centeredTextRect(in: super.titleRect(forBounds: rect))
-    }
-
-    override func drawingRect(forBounds rect: NSRect) -> NSRect {
-        centeredTextRect(in: super.drawingRect(forBounds: rect))
-    }
-
-    override func edit(
-        withFrame rect: NSRect,
-        in controlView: NSView,
-        editor textObj: NSText,
-        delegate: Any?,
-        event: NSEvent?
-    ) {
-        super.edit(
-            withFrame: centeredTextRect(in: rect),
-            in: controlView,
-            editor: textObj,
-            delegate: delegate,
-            event: event
-        )
-    }
-
-    override func select(
-        withFrame rect: NSRect,
-        in controlView: NSView,
-        editor textObj: NSText,
-        delegate: Any?,
-        start selStart: Int,
-        length selLength: Int
-    ) {
-        super.select(
-            withFrame: centeredTextRect(in: rect),
-            in: controlView,
-            editor: textObj,
-            delegate: delegate,
-            start: selStart,
-            length: selLength
-        )
-    }
-}
-
-/// 在全屏 Panel 中支持首次点击直接获取焦点的搜索框。
-final class SearchTextField: NSTextField {
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        bounds.contains(point) ? self : nil
-    }
-
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
-        true
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        window?.makeFirstResponder(self)
-        super.mouseDown(with: event)
-    }
-}
-
-/// `LauncherPagerView` 向根组合视图发送操作意图的边界协议。
-@MainActor
-protocol LauncherPagerDelegate: AnyObject {
-    func pager(_ pager: LauncherPagerView, open tile: LauncherTile)
-    func pagerDidRequestEditing(_ pager: LauncherPagerView)
-    func pager(_ pager: LauncherPagerView, contextMenuFor tile: LauncherTile) -> NSMenu
-}
-
 /// 渲染分页 Tile、交互式页面移动、边缘副本和拖拽预览。
 ///
 /// 数据方向：
@@ -880,7 +789,6 @@ final class LauncherPagerView: NSView {
     private var pageViews: [Int: FlippedView] = [:]
     private var tileViews: [String: LauncherTileView] = [:]
     private var activeTileIDs = Set<String>()
-    private var activeTileViews: [LauncherTileView] = []
     private var metrics = LauncherGridMetrics(size: .zero, layout: .default)
     private var lastBoundsSize: CGSize = .zero
     private var dropTargetID: String?
@@ -935,25 +843,10 @@ final class LauncherPagerView: NSView {
             return self
         }
 
-        if let tileView = interactiveTile(at: point, from: self) {
-            if NSApp.currentEvent?.type == .leftMouseDown {
-                let tilePoint = tileView.convert(point, from: self)
-                LumaEventLog.shared.write(
-                    "hit",
-                    "page=\(store.pageIndex) tile=\(tileView.tileID) title=\(tileView.tile.title) "
-                        + "pagerPoint=\(point) tilePoint=\(tilePoint) "
-                        + "tileFrame=\(tileView.frame) contentOrigin=\(contentView.frame.origin)"
-                )
-            }
+        if let tileView = hitTestTile(at: point, from: self),
+           activeTileIDs.contains(tileView.tileID),
+           tileView.alphaValue > 0.05 {
             return tileView
-        }
-
-        if NSApp.currentEvent?.type == .leftMouseDown {
-            LumaEventLog.shared.write(
-                "hit.none",
-                "page=\(store.pageIndex) pagerPoint=\(point) "
-                    + "contentOrigin=\(contentView.frame.origin)"
-            )
         }
         return nil
     }
@@ -965,10 +858,9 @@ final class LauncherPagerView: NSView {
         replicaRefreshWorkItem?.cancel()
         replicaRefreshWorkItem = nil
         if animated {
-            suspendInteraction(for: 0.22)
-            setPageRasterizationEnabled(false)
+            setPageRasterizationEnabled(true)
             performReload(animated: true, refreshReplicas: false, retargetRunningAnimations: true)
-            scheduleRenderStabilization(after: 0.24)
+            scheduleRenderStabilization(after: 0.18)
         } else {
             setPageRasterizationEnabled(true)
             performReload(animated: false, refreshReplicas: true, retargetRunningAnimations: false)
@@ -978,10 +870,8 @@ final class LauncherPagerView: NSView {
     /// 使用适合快速变化搜索结果的动画协调路径。
     func reloadSearchResults() {
         replicaRefreshWorkItem?.cancel()
-        suspendInteraction(for: 0.18)
-        setPageRasterizationEnabled(false)
-        performReload(animated: true, refreshReplicas: false, retargetRunningAnimations: true)
-        scheduleRenderStabilization(after: 0.20)
+        setPageRasterizationEnabled(true)
+        performReload(animated: false, refreshReplicas: true, retargetRunningAnimations: false)
     }
 
     private func scheduleRenderStabilization(after delay: TimeInterval) {
@@ -1103,8 +993,6 @@ final class LauncherPagerView: NSView {
 
         var movingViews: [(view: LauncherTileView, frame: NSRect)] = []
         var appearingViews: [LauncherTileView] = []
-        var orderedActiveViews: [LauncherTileView] = []
-
         for (index, tile) in tiles.enumerated() {
             let pageIndex = index / metrics.itemsPerPage
             guard let pageView = pageViews[pageIndex] else {
@@ -1151,9 +1039,7 @@ final class LauncherPagerView: NSView {
             if animated && (isNew || view.alphaValue < 0.999) {
                 appearingViews.append(view)
             }
-            orderedActiveViews.append(view)
         }
-        activeTileViews = orderedActiveViews
 
         if animated, !movingViews.isEmpty || !appearingViews.isEmpty {
             NSAnimationContext.runAnimationGroup { context in
@@ -1332,30 +1218,19 @@ final class LauncherPagerView: NSView {
     }
 
     private func tile(atDraggingLocation location: NSPoint) -> LauncherTileView? {
-        interactiveTile(at: location, from: nil)
-    }
-
-    /// 通过真实 AppKit 视图层级解析坐标，避免手动拼接翻转坐标导致串位。
-    ///
-    /// - Parameters:
-    ///   - point: 待命中的坐标点。
-    ///   - sourceView: 坐标所属视图；为 `nil` 时表示窗口坐标。
-    /// - Returns: 实际命中的可交互 Tile；没有命中时返回 `nil`。
-    private func interactiveTile(at point: NSPoint, from sourceView: NSView?) -> LauncherTileView? {
-        guard let currentPage = pageViews[store.pageIndex] else {
+        let localPoint = convert(location, from: nil)
+        guard let tileView = hitTestTile(at: localPoint, from: self),
+              activeTileIDs.contains(tileView.tileID),
+              tileView.alphaValue > 0.05 else {
             return nil
         }
+        return tileView
+    }
 
-        return activeTileViews.reversed().first { view in
-            guard view.superview === currentPage,
-                  activeTileIDs.contains(view.tileID),
-                  view.alphaValue > 0.05 else {
-                return false
-            }
-
-            let tilePoint = view.convert(point, from: sourceView)
-            return view.bounds.contains(tilePoint) && view.hitTest(tilePoint) === view
-        }
+    /// Resolves a tile through AppKit's view hierarchy without manually scanning tile frames.
+    private func hitTestTile(at point: NSPoint, from sourceView: NSView) -> LauncherTileView? {
+        let contentPoint = contentView.convert(point, from: sourceView)
+        return contentView.hitTest(contentPoint)?.enclosingLauncherTileView
     }
 
     /// 悬停目标变化时，只发送一次内存排序预览。
@@ -1405,14 +1280,19 @@ final class LauncherPagerView: NSView {
             store.endDraggingTile(commit: true)
         }
 
-        guard let draggedID = sender.draggingPasteboard.string(forType: .string) else {
+        guard store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let draggedID = sender.draggingPasteboard.string(forType: .string),
+              let target = tile(atDraggingLocation: sender.draggingLocation),
+              target.tileID != draggedID else {
             return false
         }
 
-        if let target = tile(atDraggingLocation: sender.draggingLocation),
-           let folder = target.tile.folder,
-           draggedID.hasPrefix("app:") {
+        if let folder = target.tile.folder, draggedID.hasPrefix("app:") {
             store.addApp(draggedID, to: folder.id)
+        } else if draggedID.hasPrefix("app:"), target.tile.app != nil {
+            store.createFolder(containingAppIDs: [draggedID, target.tileID])
+        } else {
+            updateDropTarget(draggedID: draggedID, target: target)
         }
         return true
     }
@@ -1420,11 +1300,6 @@ final class LauncherPagerView: NSView {
 
 extension LauncherPagerView: LauncherTileViewDelegate {
     func tileView(_ view: LauncherTileView, didRequestOpen tile: LauncherTile) {
-        LumaEventLog.shared.write(
-            "open.delegate",
-            "pressed=\(tile.id) pressedTitle=\(tile.title) "
-                + "viewNow=\(view.tileID) viewTitle=\(view.tile.title)"
-        )
         delegate?.pager(self, open: tile)
     }
 
@@ -1455,8 +1330,15 @@ extension LauncherPagerView: LauncherTileViewDelegate {
             store.endDraggingTile(commit: true)
         }
 
+        guard store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              draggedID != view.tileID else {
+            return false
+        }
+
         if let folder = view.tile.folder, draggedID.hasPrefix("app:") {
             store.addApp(draggedID, to: folder.id)
+        } else if draggedID.hasPrefix("app:"), view.tile.app != nil {
+            store.createFolder(containingAppIDs: [draggedID, view.tileID])
         } else {
             updateDropTarget(draggedID: draggedID, target: view)
         }
@@ -1466,18 +1348,6 @@ extension LauncherPagerView: LauncherTileViewDelegate {
     func tileView(_ view: LauncherTileView, contextMenuFor tile: LauncherTile) -> NSMenu {
         delegate?.pager(self, contextMenuFor: tile) ?? NSMenu()
     }
-}
-
-/// 单个 Tile 视图向所属 Pager 发送操作意图的边界协议。
-@MainActor
-protocol LauncherTileViewDelegate: AnyObject {
-    func tileView(_ view: LauncherTileView, didRequestOpen tile: LauncherTile)
-    func tileViewDidRequestEditing(_ view: LauncherTileView)
-    func tileViewDidBeginDragging(_ view: LauncherTileView)
-    func tileViewDidEndDragging(_ view: LauncherTileView)
-    func tileView(_ view: LauncherTileView, draggingUpdatedWith draggedID: String) -> NSDragOperation
-    func tileView(_ view: LauncherTileView, performDropWith draggedID: String) -> Bool
-    func tileView(_ view: LauncherTileView, contextMenuFor tile: LauncherTile) -> NSMenu
 }
 
 /// 展示并处理单个应用或文件夹 Tile 的交互。
@@ -1614,7 +1484,7 @@ final class LauncherTileView: NSView, NSDraggingSource {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        iconHitFrame.contains(point) ? self : nil
+        bounds.contains(point) ? self : nil
     }
 
     override func mouseEntered(with event: NSEvent) {
@@ -1631,12 +1501,6 @@ final class LauncherTileView: NSView, NSDraggingSource {
         mouseDownEvent = event
         pressedTile = tile
         longPressTriggered = false
-        let iconFrameInWindow = convert(iconHitFrame, to: nil)
-        LumaEventLog.shared.write(
-            "click.down",
-            "tile=\(tile.id) title=\(tile.title) windowPoint=\(event.locationInWindow) "
-                + "iconFrame=\(iconFrameInWindow) editing=\(isEditing)"
-        )
         if isEditing {
             return
         }
@@ -1688,19 +1552,7 @@ final class LauncherTileView: NSView, NSDraggingSource {
         }
 
         guard !isDraggingTile, !longPressTriggered, !isEditing else { return }
-        guard let pressedTile, pressedTile.id == tile.id else {
-            LumaEventLog.shared.write(
-                "click.cancel",
-                "reason=tileChanged pressed=\(pressedTile?.id ?? "nil") current=\(tile.id)"
-            )
-            return
-        }
-
-        LumaEventLog.shared.write(
-            "click.up",
-            "tile=\(pressedTile.id) title=\(pressedTile.title) currentView=\(tile.id) "
-                + "windowPoint=\(event.locationInWindow)"
-        )
+        guard let pressedTile, pressedTile.id == tile.id else { return }
         delegate?.tileView(self, didRequestOpen: pressedTile)
     }
 
@@ -1808,10 +1660,6 @@ final class LauncherTileView: NSView, NSDraggingSource {
         updateAppearance(animated: true)
     }
 
-    private var iconHitFrame: NSRect {
-        iconView.frame.insetBy(dx: -3, dy: -3)
-    }
-
     private func image(for tile: LauncherTile) -> NSImage? {
         switch tile.kind {
         case let .app(app):
@@ -1857,651 +1705,5 @@ final class LauncherTileView: NSView, NSDraggingSource {
             titleLabel.alphaValue = visibilityAlpha
             iconView.layer?.transform = targetTransform
         }
-    }
-}
-
-/// 以模态浮层形式展示并管理一个文件夹内的应用。
-@MainActor
-final class FolderOverlayView: NSView {
-    let folderID: String
-    var onClose: (() -> Void)?
-    var onLaunch: ((LauncherAppInfo) -> Void)?
-    var onRename: ((LauncherFolder) -> Void)?
-
-    private let store: LauncherStore
-    private var folder: LauncherFolder
-    private let panel = NSVisualEffectView()
-    private let titleButton = NSButton()
-    private let closeButton = NSButton()
-    private let scrollView = NSScrollView()
-    private let documentView = FlippedView()
-    private let emptyStateLabel = NSTextField(labelWithString: "No apps in this folder")
-    private var appViews: [FolderAppTileView] = []
-
-    override var isFlipped: Bool { true }
-
-    init(frame: NSRect, folder: LauncherFolder, store: LauncherStore) {
-        folderID = folder.id
-        self.folder = folder
-        self.store = store
-        super.init(frame: frame)
-
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.28).cgColor
-
-        panel.material = .hudWindow
-        panel.blendingMode = .withinWindow
-        panel.state = .active
-        panel.wantsLayer = true
-        panel.layer?.cornerRadius = 32
-        panel.layer?.cornerCurve = .continuous
-        panel.layer?.borderWidth = 1
-        panel.layer?.borderColor = NSColor.white.withAlphaComponent(0.16).cgColor
-        addSubview(panel)
-
-        titleButton.isBordered = false
-        titleButton.font = .systemFont(ofSize: 25, weight: .semibold)
-        titleButton.contentTintColor = .white
-        titleButton.target = self
-        titleButton.action = #selector(renameFolder)
-        titleButton.setAccessibilityLabel("Rename \(folder.name)")
-        panel.addSubview(titleButton)
-
-        closeButton.isBordered = false
-        closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")
-        closeButton.contentTintColor = .white.withAlphaComponent(0.82)
-        closeButton.target = self
-        closeButton.action = #selector(closeOverlay)
-        panel.addSubview(closeButton)
-
-        scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = true
-        scrollView.documentView = documentView
-        panel.addSubview(scrollView)
-
-        emptyStateLabel.font = .systemFont(ofSize: 16, weight: .medium)
-        emptyStateLabel.textColor = .white.withAlphaComponent(0.60)
-        emptyStateLabel.alignment = .center
-        emptyStateLabel.isHidden = true
-        panel.addSubview(emptyStateLabel)
-        reloadApps()
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    override func layout() {
-        super.layout()
-        let panelSize = NSSize(width: 650, height: min(520, max(420, bounds.height - 180)))
-        panel.frame = NSRect(
-            x: floor((bounds.width - panelSize.width) / 2),
-            y: floor((bounds.height - panelSize.height) / 2),
-            width: panelSize.width,
-            height: panelSize.height
-        )
-        titleButton.frame = NSRect(x: 26, y: 20, width: panel.bounds.width - 100, height: 38)
-        closeButton.frame = NSRect(x: panel.bounds.width - 58, y: 20, width: 34, height: 34)
-        scrollView.frame = NSRect(x: 22, y: 74, width: panel.bounds.width - 44, height: panel.bounds.height - 96)
-        emptyStateLabel.frame = NSRect(
-            x: 48,
-            y: floor(panel.bounds.midY - 12),
-            width: panel.bounds.width - 96,
-            height: 24
-        )
-        layoutApps()
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
-        if !panel.frame.contains(point) {
-            onClose?()
-        }
-    }
-
-    func update(folder: LauncherFolder) {
-        self.folder = folder
-        reloadApps()
-    }
-
-    /// 根据 Store 派生的文件夹成员重建应用 Tile。
-    private func reloadApps() {
-        titleButton.title = folder.name
-        appViews.forEach { $0.removeFromSuperview() }
-        appViews = store.apps(in: folder).map { app in
-            let view = FolderAppTileView(app: app, store: store)
-            view.onOpen = { [weak self] app in self?.onLaunch?(app) }
-            view.onRemove = { [weak self] app in
-                guard let self else { return }
-                self.store.removeApp(app.id, from: self.folder.id)
-            }
-            view.onToggleHidden = { [weak self] app in
-                guard let self else { return }
-                self.store.setHidden(!self.store.isAppHidden(app.id), for: app.id)
-            }
-            documentView.addSubview(view)
-            return view
-        }
-        emptyStateLabel.isHidden = !appViews.isEmpty
-        needsLayout = true
-    }
-
-    private func layoutApps() {
-        let columns = 4
-        let tileWidth: CGFloat = 136
-        let tileHeight: CGFloat = 132
-        let gap: CGFloat = 10
-        let contentWidth = scrollView.contentSize.width
-        let gridWidth = CGFloat(columns) * tileWidth + CGFloat(columns - 1) * gap
-        let leading = max(0, floor((contentWidth - gridWidth) / 2))
-
-        for (index, view) in appViews.enumerated() {
-            let row = index / columns
-            let column = index % columns
-            view.frame = NSRect(
-                x: leading + CGFloat(column) * (tileWidth + gap),
-                y: CGFloat(row) * (tileHeight + 10),
-                width: tileWidth,
-                height: tileHeight
-            )
-        }
-        let rows = max(1, Int(ceil(Double(appViews.count) / Double(columns))))
-        documentView.frame = NSRect(
-            x: 0,
-            y: 0,
-            width: contentWidth,
-            height: CGFloat(rows) * (tileHeight + 10)
-        )
-    }
-
-    @objc private func closeOverlay() {
-        onClose?()
-    }
-
-    @objc private func renameFolder() {
-        onRename?(folder)
-    }
-}
-
-/// 仅在文件夹浮层中使用的紧凑应用 Tile。
-@MainActor
-final class FolderAppTileView: NSView {
-    var onOpen: ((LauncherAppInfo) -> Void)?
-    var onRemove: ((LauncherAppInfo) -> Void)?
-    var onToggleHidden: ((LauncherAppInfo) -> Void)?
-
-    private let app: LauncherAppInfo
-    private let store: LauncherStore
-    private let iconButton = NSButton()
-    private let label = NSTextField(labelWithString: "")
-
-    override var isFlipped: Bool { true }
-
-    init(app: LauncherAppInfo, store: LauncherStore) {
-        self.app = app
-        self.store = store
-        super.init(frame: .zero)
-
-        iconButton.isBordered = false
-        iconButton.image = store.appIcon(for: app, size: 82)
-        iconButton.imageScaling = .scaleProportionallyUpOrDown
-        iconButton.target = self
-        iconButton.action = #selector(openApp)
-        addSubview(iconButton)
-
-        label.stringValue = app.title
-        label.font = .systemFont(ofSize: 13, weight: .medium)
-        label.textColor = .white
-        label.alignment = .center
-        label.maximumNumberOfLines = 2
-        label.lineBreakMode = .byTruncatingTail
-        addSubview(label)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    override func layout() {
-        super.layout()
-        iconButton.frame = NSRect(x: floor((bounds.width - 82) / 2), y: 4, width: 82, height: 82)
-        label.frame = NSRect(x: 2, y: 94, width: bounds.width - 4, height: 34)
-    }
-
-    override func menu(for event: NSEvent) -> NSMenu? {
-        let menu = NSMenu()
-        menu.addItem(ClosureMenuItem(title: store.isAppHidden(app.id) ? "Unhide App" : "Hide App") { [weak self] in
-            guard let self else { return }
-            self.onToggleHidden?(self.app)
-        })
-        menu.addItem(ClosureMenuItem(title: "Remove from Folder") { [weak self] in
-            guard let self else { return }
-            self.onRemove?(self.app)
-        })
-        return menu
-    }
-
-    @objc private func openApp() {
-        onOpen?(app)
-    }
-}
-
-/// 使用 Core Animation Layer 承载的启动器色调渐变视图。
-final class GradientBackgroundView: NSView {
-    var colors: [NSColor] = [] {
-        didSet {
-            gradientLayer.colors = colors.map(\.cgColor)
-        }
-    }
-
-    private let gradientLayer = CAGradientLayer()
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-        layer = gradientLayer
-        gradientLayer.startPoint = CGPoint(x: 0, y: 0)
-        gradientLayer.endPoint = CGPoint(x: 1, y: 1)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-}
-
-/// 显式绘制 Hover 和按下状态的自定义顶部控件。
-final class HeaderButton: NSControl {
-    private var trackingAreaToken: NSTrackingArea?
-    private var hovering = false
-    private var pressed = false
-    private let hoverShape = CAShapeLayer()
-    private let symbolView = NSImageView()
-    private let titleLabel = NSTextField(labelWithString: "")
-
-    var image: NSImage? {
-        didSet {
-            symbolView.image = image
-            needsLayout = true
-        }
-    }
-
-    var title = "" {
-        didSet {
-            titleLabel.stringValue = title
-            needsLayout = true
-        }
-    }
-
-    var textFont: NSFont = .systemFont(ofSize: 13.5, weight: .semibold) {
-        didSet {
-            titleLabel.font = textFont
-            needsLayout = true
-        }
-    }
-
-    var contentTintColor: NSColor = .white {
-        didSet {
-            updateForegroundColor()
-        }
-    }
-
-    override var isEnabled: Bool {
-        didSet {
-            updateForegroundColor()
-            updateBackground(animated: false)
-        }
-    }
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        configureHoverShape()
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    private func configureHoverShape() {
-        wantsLayer = true
-        setAccessibilityElement(true)
-        setAccessibilityRole(.button)
-        hoverShape.fillColor = NSColor.white.withAlphaComponent(0.018).cgColor
-        hoverShape.strokeColor = NSColor.clear.cgColor
-        hoverShape.lineWidth = 1
-        layer?.insertSublayer(hoverShape, at: 0)
-
-        symbolView.imageScaling = .scaleProportionallyDown
-        symbolView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 15, weight: .semibold)
-        addSubview(symbolView)
-
-        titleLabel.font = textFont
-        titleLabel.alignment = .center
-        titleLabel.lineBreakMode = .byTruncatingTail
-        titleLabel.maximumNumberOfLines = 1
-        addSubview(titleLabel)
-        updateForegroundColor()
-    }
-
-    override func layout() {
-        super.layout()
-        hoverShape.frame = bounds
-        let hoverRect = bounds.insetBy(dx: 1.5, dy: 3)
-        hoverShape.path = CGPath(
-            roundedRect: hoverRect,
-            cornerWidth: hoverRect.height / 2,
-            cornerHeight: hoverRect.height / 2,
-            transform: nil
-        )
-
-        let iconSize: CGFloat = image == nil ? 0 : 18
-        let spacing: CGFloat = image == nil || title.isEmpty ? 0 : 10
-        let measuredTitleWidth = title.isEmpty
-            ? CGFloat.zero
-            : ceil((title as NSString).size(withAttributes: [.font: textFont]).width)
-        let maxTitleWidth = max(0, bounds.width - iconSize - spacing - 24)
-        let titleWidth = min(measuredTitleWidth, maxTitleWidth)
-        let groupWidth = iconSize + spacing + titleWidth
-        let startX = max(8, floor((bounds.width - groupWidth) / 2))
-        let centerY = bounds.midY
-
-        symbolView.isHidden = image == nil
-        titleLabel.isHidden = title.isEmpty
-        if image != nil {
-            symbolView.frame = NSRect(
-                x: startX,
-                y: floor(centerY - iconSize / 2),
-                width: iconSize,
-                height: iconSize
-            )
-        }
-        titleLabel.frame = NSRect(
-            x: startX + iconSize + spacing,
-            y: floor(centerY - 10),
-            width: titleWidth,
-            height: 20
-        )
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        bounds.contains(point) ? self : nil
-    }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let trackingAreaToken {
-            removeTrackingArea(trackingAreaToken)
-        }
-        let tracking = NSTrackingArea(
-            rect: bounds,
-            options: [.activeAlways, .mouseEnteredAndExited, .inVisibleRect],
-            owner: self
-        )
-        addTrackingArea(tracking)
-        trackingAreaToken = tracking
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        hovering = true
-        updateBackground(animated: true)
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        hovering = false
-        updateBackground(animated: true)
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        guard isEnabled, let window else { return }
-
-        pressed = true
-        updateBackground(animated: false)
-
-        while let trackingEvent = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
-            let localPoint = convert(trackingEvent.locationInWindow, from: nil)
-            let isInside = bounds.contains(localPoint)
-
-            if trackingEvent.type == .leftMouseDragged {
-                if pressed != isInside {
-                    pressed = isInside
-                    updateBackground(animated: false)
-                }
-                continue
-            }
-
-            pressed = false
-            updateBackground(animated: true)
-            if isInside, let action {
-                LumaEventLog.shared.write("header.action", toolTip ?? NSStringFromSelector(action))
-                NSApp.sendAction(action, to: target, from: self)
-            }
-            return
-        }
-
-        pressed = false
-        updateBackground(animated: true)
-    }
-
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
-        true
-    }
-
-    private func updateForegroundColor() {
-        let alpha: CGFloat = isEnabled ? 1 : 0.45
-        let color = contentTintColor.withAlphaComponent(contentTintColor.alphaComponent * alpha)
-        symbolView.contentTintColor = color
-        titleLabel.textColor = color
-    }
-
-    /// 只动画 Layer 颜色，保持控件布局和命中测试稳定。
-    ///
-    /// - Parameter animated: 是否执行颜色过渡动画。
-    private func updateBackground(animated: Bool) {
-        let backgroundColor: NSColor
-        let borderColor: NSColor
-        if pressed {
-            backgroundColor = .white.withAlphaComponent(0.16)
-            borderColor = .white.withAlphaComponent(0.20)
-        } else if hovering && isEnabled {
-            backgroundColor = .white.withAlphaComponent(0.10)
-            borderColor = .white.withAlphaComponent(0.14)
-        } else {
-            backgroundColor = .white.withAlphaComponent(0.018)
-            borderColor = .clear
-        }
-
-        let background = backgroundColor.cgColor
-        let border = borderColor.cgColor
-        guard animated else {
-            hoverShape.fillColor = background
-            hoverShape.strokeColor = border
-            return
-        }
-
-        let backgroundAnimation = CABasicAnimation(keyPath: "fillColor")
-        backgroundAnimation.fromValue = hoverShape.presentation()?.fillColor ?? hoverShape.fillColor
-        backgroundAnimation.toValue = background
-        backgroundAnimation.duration = 0.16
-        backgroundAnimation.timingFunction = CAMediaTimingFunction(name: .easeOut)
-
-        let borderAnimation = CABasicAnimation(keyPath: "strokeColor")
-        borderAnimation.fromValue = hoverShape.presentation()?.strokeColor ?? hoverShape.strokeColor
-        borderAnimation.toValue = border
-        borderAnimation.duration = 0.16
-        borderAnimation.timingFunction = CAMediaTimingFunction(name: .easeOut)
-
-        hoverShape.fillColor = background
-        hoverShape.strokeColor = border
-        hoverShape.add(backgroundAnimation, forKey: "hoverBackground")
-        hoverShape.add(borderAnimation, forKey: "hoverBorder")
-    }
-}
-
-/// 使用左上角坐标系的 AppKit 工具容器。
-final class FlippedView: NSView {
-    override var isFlipped: Bool { true }
-}
-
-/// 绘制分页指示器，并将点击转换为页码选择意图。
-final class PageDotsView: NSView {
-    var pageCount = 1 {
-        didSet { needsDisplay = true }
-    }
-    var currentPage = 0 {
-        didSet { needsDisplay = true }
-    }
-    var onSelect: ((Int) -> Void)?
-
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        let count = max(1, pageCount)
-        let spacing: CGFloat = 14
-        let totalWidth = CGFloat(count - 1) * spacing + 8
-        let startX = floor((bounds.width - totalWidth) / 2)
-        for index in 0..<count {
-            let size: CGFloat = index == currentPage ? 8 : 6
-            let rect = NSRect(
-                x: startX + CGFloat(index) * spacing,
-                y: floor((bounds.height - size) / 2),
-                width: size,
-                height: size
-            )
-            (index == currentPage
-                ? NSColor.white.withAlphaComponent(0.92)
-                : NSColor.white.withAlphaComponent(0.34)
-            ).setFill()
-            NSBezierPath(ovalIn: rect).fill()
-        }
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        let count = max(1, pageCount)
-        let spacing: CGFloat = 14
-        let totalWidth = CGFloat(count - 1) * spacing + 8
-        let startX = floor((bounds.width - totalWidth) / 2)
-        let point = convert(event.locationInWindow, from: nil)
-        let index = Int(round((point.x - startX) / spacing))
-        guard index >= 0, index < count else { return }
-        onSelect?(index)
-    }
-}
-
-/// 持有闭包动作的 `NSMenuItem` 子类。
-final class ClosureMenuItem: NSMenuItem {
-    private let handler: () -> Void
-
-    /// 创建闭包驱动的菜单项。
-    ///
-    /// - Parameters:
-    ///   - title: 菜单项显示文本。
-    ///   - handler: 用户选择菜单项后执行的动作。
-    init(title: String, handler: @escaping () -> Void) {
-        self.handler = handler
-        super.init(title: title, action: #selector(invoke), keyEquivalent: "")
-        target = self
-    }
-
-    @available(*, unavailable)
-    required init(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    @objc private func invoke() {
-        handler()
-    }
-}
-
-/// 使用最多四个应用图标生成组合文件夹图标。
-enum FolderIconRenderer {
-    /// 生成文件夹组合图标。
-    ///
-    /// - Parameters:
-    ///   - apps: 用于组成文件夹预览的应用，最多读取前四个。
-    ///   - store: 用于获取应用图标缓存的业务 Store。
-    ///   - size: 输出图像的宽高尺寸。
-    /// - Returns: 渲染完成的文件夹图标。
-    @MainActor
-    static func image(apps: [LauncherAppInfo], store: LauncherStore, size: CGFloat) -> NSImage {
-        let image = NSImage(size: NSSize(width: size, height: size))
-        image.lockFocus()
-        defer { image.unlockFocus() }
-
-        let rect = NSRect(x: 0, y: 0, width: size, height: size)
-        NSColor.white.withAlphaComponent(0.16).setFill()
-        NSBezierPath(roundedRect: rect, xRadius: size * 0.22, yRadius: size * 0.22).fill()
-        NSColor.white.withAlphaComponent(0.18).setStroke()
-        let border = NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: size * 0.22, yRadius: size * 0.22)
-        border.lineWidth = 1
-        border.stroke()
-
-        let gap = size * 0.07
-        let inset = size * 0.13
-        let cell = (size - inset * 2 - gap) / 2
-        for index in 0..<4 {
-            let row = index / 2
-            let column = index % 2
-            let cellRect = NSRect(
-                x: inset + CGFloat(column) * (cell + gap),
-                y: size - inset - cell - CGFloat(row) * (cell + gap),
-                width: cell,
-                height: cell
-            )
-            if index < apps.count {
-                store.appIcon(for: apps[index], size: cell).draw(in: cellRect)
-            } else {
-                NSColor.white.withAlphaComponent(0.09).setFill()
-                NSBezierPath(roundedRect: cellRect, xRadius: cell * 0.18, yRadius: cell * 0.18).fill()
-            }
-        }
-        return image
-    }
-}
-
-/// 根据 Pager 尺寸和已校验网格布局计算出的 Tile 几何参数。
-struct LauncherGridMetrics {
-    let columns: Int
-    let rows: Int
-    let tileWidth: CGFloat
-    let tileHeight: CGFloat
-    let iconSize: CGFloat
-    let titleHeight: CGFloat
-    let iconTitleSpacing: CGFloat
-    let tileVerticalPadding: CGFloat
-    let rowSpacing: CGFloat
-    let columnSpacing: CGFloat
-    let leadingInset: CGFloat
-
-    /// 根据可用区域和网格配置计算 Tile 几何参数。
-    ///
-    /// - Parameters:
-    ///   - size: Pager 中可用于网格内容的尺寸。
-    ///   - layout: 已校验的行列布局。
-    init(size: CGSize, layout: LauncherGridLayout) {
-        columns = layout.columns
-        rows = layout.rows
-        rowSpacing = 10
-        columnSpacing = 14
-
-        let availableWidth = max(360, size.width)
-        let availableHeight = max(260, size.height)
-        let rawTileWidth = (availableWidth - CGFloat(columns - 1) * columnSpacing) / CGFloat(columns)
-        let rawTileHeight = (availableHeight - CGFloat(rows - 1) * rowSpacing) / CGFloat(rows)
-
-        tileWidth = floor(min(260, max(112, rawTileWidth)))
-        tileHeight = floor(min(166, max(88, rawTileHeight)))
-        iconSize = floor(min(108, max(46, min(tileWidth - 34, tileHeight - 48))))
-        titleHeight = floor(min(34, max(22, tileHeight - iconSize - 24)))
-        iconTitleSpacing = min(10, max(4, tileHeight - iconSize - titleHeight - 16))
-        tileVerticalPadding = min(10, max(6, (tileHeight - iconSize - titleHeight - iconTitleSpacing) / 2))
-
-        let gridWidth = CGFloat(columns) * tileWidth + CGFloat(columns - 1) * columnSpacing
-        leadingInset = max(0, floor((availableWidth - gridWidth) / 2))
-    }
-
-    var itemsPerPage: Int {
-        rows * columns
     }
 }
