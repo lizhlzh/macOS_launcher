@@ -282,7 +282,100 @@ func pagerHitTestingResolvesExactTileAcrossRowsAndPages() throws {
 
 @Test
 @MainActor
-func successfulDropIsNotRolledBackWhenDraggingSessionEnds() throws {
+func dragPreviewCommitsOnMoveOperationWithoutExplicitDropCallback() throws {
+    let store = makeStore()
+    applyApps((0..<6).map { index in
+        LauncherAppInfo(
+            id: "app:test.\(index)",
+            title: "Test \(index)",
+            bundleIdentifier: "test.\(index)",
+            path: "/Applications/Test\(index).app"
+        )
+    }, to: store)
+
+    let rootSize = NSSize(width: 1_440, height: 900)
+    let rootView = LauncherRootView(
+        frame: NSRect(origin: .zero, size: rootSize),
+        store: store,
+        onClose: { _ in },
+        onEscape: {}
+    )
+    let window = NSWindow(
+        contentRect: NSRect(origin: .zero, size: rootSize),
+        styleMask: [.borderless],
+        backing: .buffered,
+        defer: false
+    )
+    window.contentView = rootView
+    window.makeKeyAndOrderFront(nil)
+    defer { window.orderOut(nil) }
+    rootView.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+    let pager = try #require(extractPager(from: rootView))
+    pager.layoutSubtreeIfNeeded()
+
+    let source = try #require(pager.debugTileView(withID: "app:test.0"))
+    let target = try #require(pager.debugTileView(withID: "app:test.2"))
+
+    pager.tileViewDidBeginDragging(source)
+    _ = pager.tileView(target, draggingUpdatedWith: "app:test.0")
+    pager.tileViewDidEndDragging(source, operation: .move)
+
+    #expect(store.folders.isEmpty)
+    #expect(Array(store.tileOrder.prefix(3)) == ["app:test.1", "app:test.0", "app:test.2"])
+}
+
+@Test
+@MainActor
+func appToAppDropReordersByDefaultOutsideFolderIntentZone() throws {
+    let store = makeStore()
+    applyApps((0..<6).map { index in
+        LauncherAppInfo(
+            id: "app:test.\(index)",
+            title: "Test \(index)",
+            bundleIdentifier: "test.\(index)",
+            path: "/Applications/Test\(index).app"
+        )
+    }, to: store)
+
+    let rootSize = NSSize(width: 1_440, height: 900)
+    let rootView = LauncherRootView(
+        frame: NSRect(origin: .zero, size: rootSize),
+        store: store,
+        onClose: { _ in },
+        onEscape: {}
+    )
+    let window = NSWindow(
+        contentRect: NSRect(origin: .zero, size: rootSize),
+        styleMask: [.borderless],
+        backing: .buffered,
+        defer: false
+    )
+    window.contentView = rootView
+    window.makeKeyAndOrderFront(nil)
+    defer { window.orderOut(nil) }
+    rootView.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+    let pager = try #require(extractPager(from: rootView))
+    pager.layoutSubtreeIfNeeded()
+
+    let source = try #require(pager.debugTileView(withID: "app:test.0"))
+    let target = try #require(pager.debugTileView(withID: "app:test.2"))
+    let edgeLocation = target.convert(NSPoint(x: target.bounds.midX, y: target.bounds.maxY - 8), to: nil)
+
+    pager.tileViewDidBeginDragging(source)
+    _ = pager.tileView(target, performDropWith: "app:test.0", at: edgeLocation)
+    pager.tileViewDidEndDragging(source, operation: .move)
+
+    #expect(store.folders.isEmpty)
+    #expect(Array(store.tileOrder.prefix(3)) == ["app:test.1", "app:test.0", "app:test.2"])
+}
+
+@Test
+@MainActor
+func appToAppDropCreatesFolderInsideFolderIntentZone() throws {
     let store = makeStore()
     applyApps((0..<6).map { index in
         LauncherAppInfo(
@@ -317,10 +410,14 @@ func successfulDropIsNotRolledBackWhenDraggingSessionEnds() throws {
 
     let source = try #require(pager.debugTileView(withID: "app:test.0"))
     let target = try #require(pager.debugTileView(withID: "app:test.1"))
+    let centerLocation = target.convert(
+        NSPoint(x: target.bounds.midX, y: target.bounds.midY - 10),
+        to: nil
+    )
 
     pager.tileViewDidBeginDragging(source)
-    _ = pager.tileView(target, performDropWith: "app:test.0")
-    pager.tileViewDidEndDragging(source)
+    _ = pager.tileView(target, performDropWith: "app:test.0", at: centerLocation)
+    pager.tileViewDidEndDragging(source, operation: .move)
 
     #expect(store.folders.count == 1)
     #expect(store.folders[0].itemIDs == ["app:test.0", "app:test.1"])

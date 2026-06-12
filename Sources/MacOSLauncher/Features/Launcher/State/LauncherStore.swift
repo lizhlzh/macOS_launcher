@@ -8,11 +8,24 @@ enum LauncherStoreChange {
     case content(animated: Bool)
     case state
     case search
+    case filterModeChanged(previousPageIndex: Int)
+    case folderCreated(folderID: String, previousPageIndex: Int, targetPageIndex: Int)
     case pageDrag
     case pageSettled(previousIndex: Int, previousOffset: CGFloat)
     case editing
     case presentation
     case dragPreview
+}
+
+enum ReorderSessionKind: String {
+    case none
+    case quickDrag
+    case manualEdit
+}
+
+enum DragCommitPolicy: String {
+    case autoCommit
+    case manualCommit
 }
 
 /// 在主线程管理应用、文件夹、排序、搜索和分页业务状态。
@@ -40,6 +53,7 @@ final class LauncherStore {
     private(set) var lastScannedAt: Date?
     private(set) var statusMessage: String?
     private(set) var currentDragID: String?
+    private(set) var reorderSessionKind: ReorderSessionKind = .none
 
     var onChange: ((LauncherStoreChange) -> Void)?
     var onRefreshRequested: (() -> Void)?
@@ -49,7 +63,9 @@ final class LauncherStore {
     private var iconCache: [String: NSImage] = [:]
     private var pageDragRawOffset: CGFloat = 0
     private var tileOrderBeforeDrag: [String]?
+    private var manualEditOriginalTileOrder: [String]?
     private var dragPreviewChanged = false
+    private var activeDragCommitPolicy: DragCommitPolicy = .autoCommit
     private let interactionLogThrottle = InteractionLogThrottle()
     private var preferencesSaveTask: Task<Void, Never>?
 
@@ -99,6 +115,14 @@ final class LauncherStore {
     /// 当前可见 Tile 在现有网格布局下所需的页数。
     var pageCount: Int {
         max(1, Int(ceil(Double(visibleTiles.count) / Double(gridLayout.itemsPerPage))))
+    }
+
+    var isInManualEditMode: Bool {
+        reorderSessionKind == .manualEdit
+    }
+
+    var hasPendingDragPreview: Bool {
+        dragPreviewChanged
     }
 
     // MARK: - 生命周期输入
@@ -238,10 +262,22 @@ final class LauncherStore {
             return
         }
 
+        let previousPageIndex = pageIndex
         appFilterMode = mode
         pageIndex = 0
+        pageDragRawOffset = 0
+        pageDragOffset = 0
+        LumaEventLog.shared.writeInteraction(
+            .page,
+            "filterMode.changed",
+            fields: [
+                "mode": mode.rawValue,
+                "previousPageIndex": previousPageIndex,
+                "targetPageIndex": 0
+            ]
+        )
         savePreferences()
-        onChange?(.content(animated: true))
+        onChange?(.filterModeChanged(previousPageIndex: previousPageIndex))
     }
 
     /// 修改单个应用的隐藏状态并保存偏好。
@@ -256,6 +292,31 @@ final class LauncherStore {
 
         if hidden {
             hiddenAppIDs.insert(appID)
+            if appFilterMode == .all {
+                let previousPageIndex = pageIndex
+                appFilterMode = .visibleOnly
+                pageIndex = 0
+                pageDragRawOffset = 0
+                pageDragOffset = 0
+                LumaEventLog.shared.writeInteraction(
+                    .page,
+                    "filterMode.changed",
+                    fields: [
+                        "mode": AppFilterMode.visibleOnly.rawValue,
+                        "previousPageIndex": previousPageIndex,
+                        "targetPageIndex": 0,
+                        "reason": "hideApp"
+                    ]
+                )
+                LumaEventLog.shared.writeInteraction(
+                    .tile,
+                    hidden ? "app.hidden" : "app.unhidden",
+                    fields: ["appID": appID]
+                )
+                savePreferences()
+                onChange?(.filterModeChanged(previousPageIndex: previousPageIndex))
+                return
+            }
         } else {
             hiddenAppIDs.remove(appID)
         }
@@ -306,6 +367,11 @@ final class LauncherStore {
         isEditing = false
         draggedTileID = nil
         currentDragID = nil
+        reorderSessionKind = .none
+        manualEditOriginalTileOrder = nil
+        tileOrderBeforeDrag = nil
+        dragPreviewChanged = false
+        activeDragCommitPolicy = .autoCommit
         LumaEventLog.shared.writeInteraction(
             .lifecycle,
             "launcher.prepare",
@@ -424,10 +490,10 @@ final class LauncherStore {
 
     /// 响应顶部按钮切换编辑模式。
     func toggleEditing() {
-        if isEditing {
-            endEditing()
+        if isInManualEditMode {
+            commitManualEditing()
         } else {
-            beginEditing()
+            beginManualEditing()
         }
     }
 
@@ -439,6 +505,72 @@ final class LauncherStore {
     func endEditing() {
         draggedTileID = nil
         isEditing = false
+        if reorderSessionKind != .manualEdit {
+            reorderSessionKind = .none
+        }
+        activeDragCommitPolicy = .autoCommit
+        tileOrderBeforeDrag = nil
+        dragPreviewChanged = false
+        onChange?(.editing)
+    }
+
+    func beginManualEditing() {
+        guard !isInManualEditMode else {
+            return
+        }
+
+        manualEditOriginalTileOrder = tileOrder
+        reorderSessionKind = .manualEdit
+        activeDragCommitPolicy = .manualCommit
+        isEditing = true
+        LumaEventLog.shared.writeInteraction(
+            .drag,
+            "manualEdit.begin",
+            fields: [
+                "tileCount": tileOrder.count,
+                "sortMode": sortMode.title
+            ]
+        )
+        onChange?(.editing)
+    }
+
+    func commitManualEditing() {
+        guard isInManualEditMode else {
+            return
+        }
+
+        savePreferences()
+        manualEditOriginalTileOrder = nil
+        tileOrderBeforeDrag = nil
+        dragPreviewChanged = false
+        draggedTileID = nil
+        currentDragID = nil
+        activeDragCommitPolicy = .autoCommit
+        reorderSessionKind = .none
+        isEditing = false
+        LumaEventLog.shared.writeInteraction(.drag, "manualEdit.commit")
+        onChange?(.editing)
+    }
+
+    func cancelManualEditing() {
+        guard isInManualEditMode else {
+            return
+        }
+
+        let originalOrder = manualEditOriginalTileOrder
+        manualEditOriginalTileOrder = nil
+        tileOrderBeforeDrag = nil
+        dragPreviewChanged = false
+        draggedTileID = nil
+        currentDragID = nil
+        activeDragCommitPolicy = .autoCommit
+        reorderSessionKind = .none
+        isEditing = false
+        if let originalOrder {
+            tileOrder = originalOrder
+            onChange?(.content(animated: false))
+        }
+        LumaEventLog.shared.writeInteraction(.drag, "manualEdit.cancel")
         onChange?(.editing)
     }
 
@@ -447,7 +579,7 @@ final class LauncherStore {
     /// 调用方向：Tile 拖拽源 -> Pager delegate -> Store。
     ///
     /// - Parameter tileID: 开始拖拽的 Tile 标识。
-    func beginDraggingTile(_ tileID: String) {
+    func beginDraggingTile(_ tileID: String, commitPolicy: DragCommitPolicy) {
         if sortMode != .custom {
             tileOrder = orderedTiles().map(\.id)
             sortMode = .custom
@@ -457,14 +589,26 @@ final class LauncherStore {
         dragPreviewChanged = false
         draggedTileID = tileID
         currentDragID = UUID().uuidString
+        activeDragCommitPolicy = commitPolicy
         isEditing = true
+        switch commitPolicy {
+        case .autoCommit:
+            reorderSessionKind = .quickDrag
+        case .manualCommit:
+            reorderSessionKind = .manualEdit
+            if manualEditOriginalTileOrder == nil {
+                manualEditOriginalTileOrder = tileOrder
+            }
+        }
         LumaEventLog.shared.writeInteraction(
             .drag,
             "drag.begin",
             fields: [
                 "dragID": currentDragID ?? "nil",
                 "tileID": tileID,
-                "sortMode": sortMode.title
+                "sortMode": sortMode.title,
+                "commitPolicy": commitPolicy.rawValue,
+                "sessionKind": reorderSessionKind.rawValue
             ]
         )
         onChange?(.editing)
@@ -478,25 +622,47 @@ final class LauncherStore {
     /// - Parameter commit: 是否提交本次拖拽预览。
     func endDraggingTile(commit: Bool) {
         let dragID = currentDragID
-        if commit {
-            if dragPreviewChanged {
-                savePreferences()
+        let previewChanged = dragPreviewChanged
+        let commitPolicy = activeDragCommitPolicy
+        let sessionKind = reorderSessionKind
+
+        switch commitPolicy {
+        case .autoCommit:
+            if commit {
+                if previewChanged {
+                    savePreferences()
+                }
+            } else if let tileOrderBeforeDrag {
+                tileOrder = tileOrderBeforeDrag
+                onChange?(.content(animated: false))
             }
-        } else if let tileOrderBeforeDrag {
-            tileOrder = tileOrderBeforeDrag
-            onChange?(.content(animated: false))
+
+            reorderSessionKind = .none
+            isEditing = false
+        case .manualCommit:
+            if !commit, let tileOrderBeforeDrag {
+                tileOrder = tileOrderBeforeDrag
+                onChange?(.content(animated: false))
+            }
+
+            reorderSessionKind = .manualEdit
+            isEditing = true
         }
 
         tileOrderBeforeDrag = nil
         dragPreviewChanged = false
         draggedTileID = nil
         currentDragID = nil
+        activeDragCommitPolicy = .autoCommit
         LumaEventLog.shared.writeInteraction(
             .drag,
             "drag.end",
             fields: [
                 "dragID": dragID ?? "nil",
-                "commit": commit
+                "commit": commit,
+                "previewChanged": previewChanged,
+                "commitPolicy": commitPolicy.rawValue,
+                "sessionKind": sessionKind.rawValue
             ]
         )
         onChange?(.editing)
@@ -544,6 +710,7 @@ final class LauncherStore {
     /// - Returns: 新创建的文件夹模型。
     @discardableResult
     func createFolder(named name: String? = nil, containing itemIDs: [String] = []) -> LauncherFolder {
+        let previousPageIndex = pageIndex
         let validItemIDs = itemIDs.filter { app(withID: $0) != nil }
         let folder = LauncherFolder(
             id: UUID().uuidString,
@@ -556,7 +723,28 @@ final class LauncherStore {
         tileOrder.removeAll { validItemIDs.contains($0) }
         tileOrder.append(folder.tileID)
         reconcileAfterAppScan()
-        onChange?(.content(animated: true))
+        let targetIndex = visibleTiles.firstIndex(where: { $0.id == folder.tileID }) ?? max(0, visibleTiles.count - 1)
+        let targetPageIndex = targetIndex / max(1, gridLayout.itemsPerPage)
+        pageIndex = targetPageIndex
+        savePreferences()
+        LumaEventLog.shared.writeInteraction(
+            .folder,
+            "folder.created",
+            fields: [
+                "folderID": folder.id,
+                "folderTileID": folder.tileID,
+                "previousPageIndex": previousPageIndex,
+                "targetPageIndex": targetPageIndex,
+                "itemCount": validItemIDs.count
+            ]
+        )
+        onChange?(
+            .folderCreated(
+                folderID: folder.id,
+                previousPageIndex: previousPageIndex,
+                targetPageIndex: targetPageIndex
+            )
+        )
         return folder
     }
 

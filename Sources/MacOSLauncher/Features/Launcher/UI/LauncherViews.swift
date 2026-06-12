@@ -433,6 +433,17 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         case .search:
             pager.reloadSearchResults()
             updatePageDots()
+        case let .filterModeChanged(previousPageIndex):
+            pager.reloadForFilterModeChange(from: previousPageIndex, to: 0)
+            updatePageDots()
+            updateHeader()
+            updateStatus()
+        case let .folderCreated(_, previousPageIndex, targetPageIndex):
+            pager.reloadForFolderCreation(from: previousPageIndex, to: targetPageIndex)
+            updatePageDots()
+            updateHeader()
+            updateStatus()
+            refreshFolderOverlay()
         case .dragPreview:
             pager.scheduleDragPreviewAnimation()
             updatePageDots()
@@ -1046,6 +1057,56 @@ final class LauncherPagerView: NSView {
         performReload(animated: false, refreshReplicas: true, retargetRunningAnimations: false)
     }
 
+    func reloadForFilterModeChange(from previousPageIndex: Int, to targetPageIndex: Int) {
+        replicaRefreshWorkItem?.cancel()
+        replicaRefreshWorkItem = nil
+        setPageRasterizationEnabled(true)
+        performReload(animated: false, refreshReplicas: false, retargetRunningAnimations: false)
+
+        let startPage = min(max(0, previousPageIndex), max(0, renderedPageCount - 1))
+        contentView.setFrameOrigin(NSPoint(x: -CGFloat(startPage + 1) * bounds.width, y: 0))
+
+        if startPage != targetPageIndex, renderedPageCount > 1 {
+            setPage(
+                index: targetPageIndex,
+                dragOffset: 0,
+                animated: true,
+                previousIndex: startPage,
+                previousOffset: 0
+            )
+        } else {
+            setPage(index: targetPageIndex, dragOffset: 0, animated: false)
+        }
+
+        scheduleEdgeReplicaRefresh(after: 0.35)
+    }
+
+    func reloadForFolderCreation(from previousPageIndex: Int, to targetPageIndex: Int) {
+        replicaRefreshWorkItem?.cancel()
+        replicaRefreshWorkItem = nil
+        setPageRasterizationEnabled(true)
+        performReload(animated: false, refreshReplicas: false, retargetRunningAnimations: false)
+
+        let startPage = min(max(0, previousPageIndex), max(0, renderedPageCount - 1))
+        let targetPage = min(max(0, targetPageIndex), max(0, renderedPageCount - 1))
+        contentView.setFrameOrigin(NSPoint(x: -CGFloat(startPage + 1) * bounds.width, y: 0))
+
+        if startPage != targetPage, renderedPageCount > 1 {
+            let previousOffset: CGFloat = startPage < targetPage ? -1 : 1
+            setPage(
+                index: targetPage,
+                dragOffset: 0,
+                animated: true,
+                previousIndex: startPage,
+                previousOffset: previousOffset
+            )
+        } else {
+            setPage(index: targetPage, dragOffset: 0, animated: false)
+        }
+
+        scheduleEdgeReplicaRefresh(after: 0.35)
+    }
+
     func scheduleDragPreviewAnimation() {
         if dragPreviewScheduled {
             needsDragPreviewAfterCurrentPass = true
@@ -1071,6 +1132,16 @@ final class LauncherPagerView: NSView {
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.setPageRasterizationEnabled(true)
+            self.refreshEdgeReplicas()
+            self.replicaRefreshWorkItem = nil
+        }
+        replicaRefreshWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    private func scheduleEdgeReplicaRefresh(after delay: TimeInterval) {
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
             self.refreshEdgeReplicas()
             self.replicaRefreshWorkItem = nil
         }
@@ -1674,7 +1745,6 @@ final class LauncherPagerView: NSView {
         defer {
             currentDragCommitted = didCommitDrop
             dropTargetID = nil
-            store.endDraggingTile(commit: didCommitDrop)
             setPageRasterizationEnabled(true)
             refreshEdgeReplicas()
         }
@@ -1697,7 +1767,7 @@ final class LauncherPagerView: NSView {
         )
         if let folder = target.tile.folder, draggedID.hasPrefix("app:") {
             store.addApp(draggedID, to: folder.id)
-        } else if draggedID.hasPrefix("app:"), target.tile.app != nil {
+        } else if shouldCreateFolder(from: draggedID, onto: target, at: sender.draggingLocation) {
             store.createFolder(containingAppIDs: [draggedID, target.tileID])
         } else {
             updateDropTarget(draggedID: draggedID, target: target)
@@ -1727,23 +1797,33 @@ extension LauncherPagerView: LauncherTileViewDelegate {
     func tileViewDidBeginDragging(_ view: LauncherTileView) {
         currentDragCommitted = false
         setPageRasterizationEnabled(false)
-        LumaEventLog.shared.writeInteraction(.drag, "tile.drag.begin", fields: ["tileID": view.tileID])
-        store.beginDraggingTile(view.tileID)
+        let commitPolicy: DragCommitPolicy = store.isInManualEditMode ? .manualCommit : .autoCommit
+        LumaEventLog.shared.writeInteraction(
+            .drag,
+            "tile.drag.begin",
+            fields: [
+                "tileID": view.tileID,
+                "commitPolicy": commitPolicy.rawValue
+            ]
+        )
+        store.beginDraggingTile(view.tileID, commitPolicy: commitPolicy)
     }
 
-    func tileViewDidEndDragging(_ view: LauncherTileView) {
+    func tileViewDidEndDragging(_ view: LauncherTileView, operation: NSDragOperation) {
         dropTargetID = nil
         let dragID = store.currentDragID
-        if !currentDragCommitted {
-            store.endDraggingTile(commit: false)
-        }
+        let shouldCommit =
+            currentDragCommitted
+            || (operation.contains(.move) && store.hasPendingDragPreview)
+        store.endDraggingTile(commit: shouldCommit)
         LumaEventLog.shared.writeInteraction(
             .drag,
             "tile.drag.end",
             fields: [
                 "tileID": view.tileID,
                 "dragID": dragID ?? "nil",
-                "committed": currentDragCommitted
+                "committed": shouldCommit,
+                "operation": operation.rawValue
             ]
         )
         currentDragCommitted = false
@@ -1759,12 +1839,11 @@ extension LauncherPagerView: LauncherTileViewDelegate {
         return .move
     }
 
-    func tileView(_ view: LauncherTileView, performDropWith draggedID: String) -> Bool {
+    func tileView(_ view: LauncherTileView, performDropWith draggedID: String, at windowLocation: NSPoint) -> Bool {
         var didCommitDrop = false
         defer {
             currentDragCommitted = didCommitDrop
             dropTargetID = nil
-            store.endDraggingTile(commit: didCommitDrop)
             setPageRasterizationEnabled(true)
             refreshEdgeReplicas()
         }
@@ -1785,13 +1864,25 @@ extension LauncherPagerView: LauncherTileViewDelegate {
         )
         if let folder = view.tile.folder, draggedID.hasPrefix("app:") {
             store.addApp(draggedID, to: folder.id)
-        } else if draggedID.hasPrefix("app:"), view.tile.app != nil {
+        } else if shouldCreateFolder(from: draggedID, onto: view, at: windowLocation) {
             store.createFolder(containingAppIDs: [draggedID, view.tileID])
         } else {
             updateDropTarget(draggedID: draggedID, target: view)
         }
         didCommitDrop = true
         return true
+    }
+
+    private func shouldCreateFolder(
+        from draggedID: String,
+        onto target: LauncherTileView,
+        at windowLocation: NSPoint
+    ) -> Bool {
+        guard draggedID.hasPrefix("app:"),
+              target.tile.app != nil else {
+            return false
+        }
+        return target.wantsCreateFolderDrop(atWindowLocation: windowLocation)
     }
 
     func tileView(_ view: LauncherTileView, contextMenuFor tile: LauncherTile) -> NSMenu {
@@ -1827,6 +1918,7 @@ final class LauncherTileView: NSView, NSDraggingSource {
     private var renderedIconSize: CGFloat = 0
     private var isHiddenApp = false
     private let interactionLogThrottle = InteractionLogThrottle()
+    private let wiggleAnimationKey = "luma.tile.wiggle"
 
     override var isFlipped: Bool { true }
 
@@ -1882,6 +1974,7 @@ final class LauncherTileView: NSView, NSDraggingSource {
         editBadge.wantsLayer = true
         editBadge.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.30).cgColor
         editBadge.layer?.cornerRadius = 13
+        editBadge.isHidden = true
         addSubview(editBadge)
 
         registerForDraggedTypes([.string])
@@ -2076,7 +2169,7 @@ final class LauncherTileView: NSView, NSDraggingSource {
                 "targetID": tile.id
             ]
         )
-        return delegate?.tileView(self, performDropWith: draggedID) ?? false
+        return delegate?.tileView(self, performDropWith: draggedID, at: sender.draggingLocation) ?? false
     }
 
     func draggingSession(
@@ -2098,7 +2191,7 @@ final class LauncherTileView: NSView, NSDraggingSource {
                 "operation": operation.rawValue
             ]
         )
-        delegate?.tileViewDidEndDragging(self)
+        delegate?.tileViewDidEndDragging(self, operation: operation)
         updateAppearance(animated: true)
     }
 
@@ -2146,7 +2239,8 @@ final class LauncherTileView: NSView, NSDraggingSource {
         renderedIconSize = metrics.iconSize
 
         if editingChanged || editBadge.isHidden == isEditing {
-            editBadge.isHidden = !isEditing
+            editBadge.isHidden = true
+            updateJiggleAnimation()
         }
         if metricsChanged {
             needsLayout = true
@@ -2159,8 +2253,19 @@ final class LauncherTileView: NSView, NSDraggingSource {
     func setEditing(_ editing: Bool, dragged: Bool) {
         isEditing = editing
         isDraggingTile = dragged
-        editBadge.isHidden = !editing
+        editBadge.isHidden = true
+        updateJiggleAnimation()
         updateAppearance(animated: true)
+    }
+
+    func wantsCreateFolderDrop(atWindowLocation location: NSPoint) -> Bool {
+        let localPoint = convert(location, from: nil)
+        guard iconView.frame.contains(localPoint) else {
+            return false
+        }
+
+        let inset = max(12, min(iconView.frame.width, iconView.frame.height) * 0.24)
+        return iconView.frame.insetBy(dx: inset, dy: inset).contains(localPoint)
     }
 
     private func image(for tile: LauncherTile) -> NSImage? {
@@ -2208,5 +2313,39 @@ final class LauncherTileView: NSView, NSDraggingSource {
             titleLabel.alphaValue = visibilityAlpha
             iconView.layer?.transform = targetTransform
         }
+    }
+
+    private func updateJiggleAnimation() {
+        if isEditing, !isDraggingTile {
+            applyJiggleAnimationIfNeeded()
+        } else {
+            removeJiggleAnimation()
+        }
+    }
+
+    private func applyJiggleAnimationIfNeeded() {
+        let phaseSeed = Double(abs(tile.id.hashValue % 11)) * 0.03
+        for view in [iconView, titleLabel] {
+            view.wantsLayer = true
+            guard let layer = view.layer,
+                  layer.animation(forKey: wiggleAnimationKey) == nil else {
+                continue
+            }
+
+            let animation = CAKeyframeAnimation(keyPath: "transform.rotation.z")
+            animation.values = [-0.026, 0.022, -0.020, 0.025]
+            animation.keyTimes = [0, 0.33, 0.66, 1]
+            animation.duration = 0.18 + phaseSeed
+            animation.autoreverses = true
+            animation.repeatCount = .infinity
+            animation.isAdditive = true
+            animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            layer.add(animation, forKey: wiggleAnimationKey)
+        }
+    }
+
+    private func removeJiggleAnimation() {
+        iconView.layer?.removeAnimation(forKey: wiggleAnimationKey)
+        titleLabel.layer?.removeAnimation(forKey: wiggleAnimationKey)
     }
 }

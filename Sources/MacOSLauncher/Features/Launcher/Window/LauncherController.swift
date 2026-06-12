@@ -40,7 +40,9 @@ final class LauncherController {
 
     /// 优先结束编辑模式；未处于编辑状态时才隐藏启动器。
     func handleEscape() {
-        if store.isEditing {
+        if store.isInManualEditMode {
+            store.cancelManualEditing()
+        } else if store.isEditing {
             store.endEditing()
         } else {
             hide(reason: "escape")
@@ -109,6 +111,9 @@ final class LauncherController {
     func hide(reason: String = "unspecified") {
         guard let panel, panel.isVisible, !isAnimating else {
             return
+        }
+        if store.isInManualEditMode {
+            store.cancelManualEditing()
         }
         let presentationID = currentPresentationID
 
