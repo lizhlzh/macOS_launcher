@@ -15,7 +15,7 @@ final class FolderOverlayView: NSView {
     private let closeButton = NSButton()
     private let scrollView = NSScrollView()
     private let documentView = FlippedView()
-    private let emptyStateLabel = NSTextField(labelWithString: "No apps in this folder")
+    private let emptyStateLabel = NSTextField(labelWithString: L10n.text(.noAppsInFolder))
     private var appViews: [FolderOverlayTileView] = []
 
     override var isFlipped: Bool { true }
@@ -44,13 +44,13 @@ final class FolderOverlayView: NSView {
         titleButton.contentTintColor = .white
         titleButton.target = self
         titleButton.action = #selector(renameFolder)
-        titleButton.setAccessibilityLabel("Rename \(folder.name)")
+        titleButton.setAccessibilityLabel("\(L10n.text(.renameFolder)) \(folder.name)")
         panel.addSubview(titleButton)
 
         closeButton.isBordered = false
         closeButton.image = NSImage(
             systemSymbolName: "xmark",
-            accessibilityDescription: "Close"
+            accessibilityDescription: L10n.text(.close)
         )
         closeButton.contentTintColor = .white.withAlphaComponent(0.82)
         closeButton.target = self

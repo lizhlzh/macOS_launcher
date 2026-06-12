@@ -85,7 +85,11 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         )
 
         let buttonHeight: CGFloat = 50
-        let controlWidths: [CGFloat] = [138, 112, 58, 58, 58, 58, 58]
+        let controlWidths: [CGFloat] = [
+            L10n.isChinese ? 116 : 132,
+            104,
+            58, 58, 58, 58, 58
+        ]
         let controlSpacing: CGFloat = 7
         let controlsWidth = controlWidths.reduce(0, +)
             + CGFloat(controlWidths.count - 1) * controlSpacing
@@ -293,7 +297,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         searchIconView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 16, weight: .medium)
         searchField.cell = VerticallyCenteredTextFieldCell()
         searchField.delegate = self
-        searchField.placeholderString = "Search apps"
+        searchField.placeholderString = L10n.text(.searchPlaceholder)
         searchField.font = .systemFont(ofSize: 18, weight: .semibold)
         searchField.textColor = .white
         searchField.focusRingType = .none
@@ -315,7 +319,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
             sortButton,
             symbol: "arrow.up.arrow.down",
             title: store.sortMode.title,
-            toolTip: "Sort",
+            toolTip: L10n.text(.sortTooltip),
             debugName: "sort",
             action: #selector(showSortMenu)
         )
@@ -323,7 +327,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
             layoutButton,
             symbol: "rectangle.grid.3x2",
             title: store.gridLayout.title,
-            toolTip: "Layout",
+            toolTip: L10n.text(.layoutTooltip),
             debugName: "layout",
             action: #selector(showLayoutMenu)
         )
@@ -331,7 +335,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
             editButton,
             symbol: "slider.horizontal.3",
             title: nil,
-            toolTip: "Edit",
+            toolTip: L10n.text(.editTooltip),
             debugName: "edit",
             action: #selector(toggleEditing)
         )
@@ -339,7 +343,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
             filterButton,
             symbol: "line.3.horizontal.decrease.circle",
             title: nil,
-            toolTip: "Filter Apps",
+            toolTip: L10n.text(.filterTooltip),
             debugName: "filter",
             action: #selector(showFilterMenu)
         )
@@ -347,7 +351,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
             folderButton,
             symbol: "folder.badge.plus",
             title: nil,
-            toolTip: "New Folder",
+            toolTip: L10n.text(.newFolder),
             debugName: "folder",
             action: #selector(createFolder)
         )
@@ -355,7 +359,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
             rescanButton,
             symbol: "arrow.clockwise",
             title: nil,
-            toolTip: "Rescan Applications",
+            toolTip: L10n.text(.rescan),
             debugName: "rescan",
             action: #selector(rescanApplications)
         )
@@ -363,7 +367,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
             closeButton,
             symbol: "xmark",
             title: nil,
-            toolTip: "Close",
+            toolTip: L10n.text(.close),
             debugName: "close",
             action: #selector(closeLauncher)
         )
@@ -482,11 +486,11 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
             systemSymbolName: store.isEditing ? "checkmark" : "slider.horizontal.3",
             accessibilityDescription: nil
         )
-        editButton.toolTip = store.isEditing ? "Done Editing" : "Edit"
+        editButton.toolTip = store.isEditing ? L10n.text(.doneEditingTooltip) : L10n.text(.editTooltip)
         rescanButton.isEnabled = store.contentState != .refreshing
         rescanButton.toolTip = store.contentState == .refreshing
-            ? "Refreshing Applications"
-            : "Rescan Applications"
+            ? L10n.text(.refreshingApplications)
+            : L10n.text(.rescan)
     }
 
     private func updateStatus() {
@@ -498,7 +502,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
 
         switch store.contentState {
         case .empty:
-            statusLabel.stringValue = "No applications found. Use Rescan Applications to try again."
+            statusLabel.stringValue = L10n.text(.noApplicationsFound)
             statusLabel.isHidden = false
         case let .failed(error):
             statusLabel.stringValue = error.message
@@ -599,23 +603,23 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
     @objc private func showSortMenu() {
         LumaEventLog.shared.writeInteraction(.header, "header.action.showSortMenu")
         let menu = NSMenu()
-        menu.addItem(menuItem("Custom", action: #selector(setCustomSort), state: store.sortMode == .custom))
-        menu.addItem(menuItem("A-Z", action: #selector(setNameSort), state: store.sortMode == .name))
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sortButton.bounds.height + 4), in: sortButton)
+        menu.addItem(menuItem(L10n.text(.sortCustom), action: #selector(setCustomSort), state: store.sortMode == .custom))
+        menu.addItem(menuItem(L10n.text(.sortName), action: #selector(setNameSort), state: store.sortMode == .name))
+        popUpHeaderMenu(menu, from: sortButton)
     }
 
     @objc private func showLayoutMenu() {
         LumaEventLog.shared.writeInteraction(.header, "header.action.showLayoutMenu")
         let menu = NSMenu()
-        let countItem = NSMenuItem(title: "\(store.gridLayout.itemsPerPage) apps per page", action: nil, keyEquivalent: "")
+        let countItem = NSMenuItem(title: L10n.text(.appsPerPage(store.gridLayout.itemsPerPage)), action: nil, keyEquivalent: "")
         countItem.isEnabled = false
         menu.addItem(countItem)
         menu.addItem(.separator())
 
-        let rowsItem = NSMenuItem(title: "Rows", action: nil, keyEquivalent: "")
+        let rowsItem = NSMenuItem(title: L10n.text(.layoutRows), action: nil, keyEquivalent: "")
         let rowsMenu = NSMenu()
         for rows in LauncherGridLayout.allowedRows {
-            let item = NSMenuItem(title: "\(rows) rows", action: #selector(setRows(_:)), keyEquivalent: "")
+            let item = NSMenuItem(title: L10n.text(.rowCount(rows)), action: #selector(setRows(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = rows
             item.state = rows == store.gridLayout.rows ? .on : .off
@@ -624,10 +628,10 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         rowsItem.submenu = rowsMenu
         menu.addItem(rowsItem)
 
-        let columnsItem = NSMenuItem(title: "Columns", action: nil, keyEquivalent: "")
+        let columnsItem = NSMenuItem(title: L10n.text(.layoutColumns), action: nil, keyEquivalent: "")
         let columnsMenu = NSMenu()
         for columns in LauncherGridLayout.allowedColumns {
-            let item = NSMenuItem(title: "\(columns) columns", action: #selector(setColumns(_:)), keyEquivalent: "")
+            let item = NSMenuItem(title: L10n.text(.columnCount(columns)), action: #selector(setColumns(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = columns
             item.state = columns == store.gridLayout.columns ? .on : .off
@@ -636,19 +640,27 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         columnsItem.submenu = columnsMenu
         menu.addItem(columnsItem)
         menu.addItem(.separator())
-        let reset = NSMenuItem(title: "Default 5 x 7", action: #selector(resetLayout), keyEquivalent: "")
+        let reset = NSMenuItem(title: L10n.text(.layoutDefault), action: #selector(resetLayout), keyEquivalent: "")
         reset.target = self
         menu.addItem(reset)
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: layoutButton.bounds.height + 4), in: layoutButton)
+        popUpHeaderMenu(menu, from: layoutButton)
     }
 
     @objc private func showFilterMenu() {
         LumaEventLog.shared.writeInteraction(.header, "header.action.showFilterMenu")
         let menu = NSMenu()
-        menu.addItem(menuItem("Visible Apps", action: #selector(showVisibleAppsOnly), state: store.appFilterMode == .visibleOnly))
-        menu.addItem(menuItem("All Apps", action: #selector(showAllApps), state: store.appFilterMode == .all))
-        menu.addItem(menuItem("Hidden Apps", action: #selector(showHiddenAppsOnly), state: store.appFilterMode == .hiddenOnly))
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: filterButton.bounds.height + 4), in: filterButton)
+        menu.addItem(menuItem(L10n.text(.filterVisible), action: #selector(showVisibleAppsOnly), state: store.appFilterMode == .visibleOnly))
+        menu.addItem(menuItem(L10n.text(.filterAll), action: #selector(showAllApps), state: store.appFilterMode == .all))
+        menu.addItem(menuItem(L10n.text(.filterHidden), action: #selector(showHiddenAppsOnly), state: store.appFilterMode == .hiddenOnly))
+        popUpHeaderMenu(menu, from: filterButton)
+    }
+
+    private func popUpHeaderMenu(_ menu: NSMenu, from button: NSView) {
+        let anchor = NSPoint(
+            x: floor(button.bounds.midX),
+            y: button.bounds.maxY + 6
+        )
+        menu.popUp(positioning: nil, at: anchor, in: button)
     }
 
     /// 创建带选中状态的菜单项。
@@ -706,7 +718,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
 
     @objc private func createFolder() {
         LumaEventLog.shared.writeInteraction(.header, "header.action.createFolder")
-        showNamePrompt(title: "New Folder", initialValue: "") { [weak self] name in
+        showNamePrompt(title: L10n.text(.newFolder), initialValue: "") { [weak self] name in
             self?.store.createFolder(named: name)
         }
     }
@@ -731,8 +743,8 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         guard let window else { return }
         let alert = NSAlert()
         alert.messageText = title
-        alert.addButton(withTitle: title == "New Folder" ? "Create" : "Rename")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: title == L10n.text(.newFolder) ? L10n.text(.create) : L10n.text(.rename))
+        alert.addButton(withTitle: L10n.text(.cancel))
 
         let input = NSTextField(string: initialValue)
         input.frame = NSRect(x: 0, y: 0, width: 280, height: 28)
@@ -758,7 +770,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
             self?.onClose("appLaunch")
         }
         overlay.onRename = { [weak self] folder in
-            self?.showNamePrompt(title: "Rename Folder", initialValue: folder.name) { name in
+            self?.showNamePrompt(title: L10n.text(.renameFolder), initialValue: folder.name) { name in
                 self?.store.renameFolder(id: folder.id, to: name)
             }
         }
@@ -830,20 +842,20 @@ extension LauncherRootView: LauncherPagerDelegate {
         let menu = NSMenu()
         switch tile.kind {
         case let .app(app):
-            let open = ClosureMenuItem(title: "Open") { [weak self] in
+            let open = ClosureMenuItem(title: L10n.text(.open)) { [weak self] in
                 self?.store.launchApp(app)
                 self?.onClose("appLaunch")
             }
             menu.addItem(open)
-            menu.addItem(ClosureMenuItem(title: "Show in Finder") { [weak self] in
+            menu.addItem(ClosureMenuItem(title: L10n.text(.showInFinder)) { [weak self] in
                 self?.store.revealInFinder(app)
             })
-            menu.addItem(ClosureMenuItem(title: store.isAppHidden(app.id) ? "Unhide App" : "Hide App") { [weak self] in
+            menu.addItem(ClosureMenuItem(title: store.isAppHidden(app.id) ? L10n.text(.unhideApp) : L10n.text(.hideApp)) { [weak self] in
                 guard let self else { return }
                 self.store.setHidden(!self.store.isAppHidden(app.id), for: app.id)
             })
 
-            let foldersItem = NSMenuItem(title: "Move to Folder", action: nil, keyEquivalent: "")
+            let foldersItem = NSMenuItem(title: L10n.text(.moveToFolder), action: nil, keyEquivalent: "")
             let foldersMenu = NSMenu()
             for folder in store.folders {
                 foldersMenu.addItem(ClosureMenuItem(title: folder.name) { [weak self] in
@@ -853,21 +865,21 @@ extension LauncherRootView: LauncherPagerDelegate {
             if !store.folders.isEmpty {
                 foldersMenu.addItem(.separator())
             }
-            foldersMenu.addItem(ClosureMenuItem(title: "New Folder") { [weak self] in
+            foldersMenu.addItem(ClosureMenuItem(title: L10n.text(.newFolder)) { [weak self] in
                 self?.store.createFolder(containing: [app.id])
             })
             foldersItem.submenu = foldersMenu
             menu.addItem(foldersItem)
         case let .folder(folder, _):
-            menu.addItem(ClosureMenuItem(title: "Open") { [weak self] in
+            menu.addItem(ClosureMenuItem(title: L10n.text(.open)) { [weak self] in
                 self?.showFolder(folder)
             })
-            menu.addItem(ClosureMenuItem(title: "Rename") { [weak self] in
-                self?.showNamePrompt(title: "Rename Folder", initialValue: folder.name) { name in
+            menu.addItem(ClosureMenuItem(title: L10n.text(.rename)) { [weak self] in
+                self?.showNamePrompt(title: L10n.text(.renameFolder), initialValue: folder.name) { name in
                     self?.store.renameFolder(id: folder.id, to: name)
                 }
             })
-            menu.addItem(ClosureMenuItem(title: "Delete Folder") { [weak self] in
+            menu.addItem(ClosureMenuItem(title: L10n.text(.deleteFolder)) { [weak self] in
                 self?.store.deleteFolder(id: folder.id)
             })
         }

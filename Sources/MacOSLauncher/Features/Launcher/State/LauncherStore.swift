@@ -51,6 +51,7 @@ final class LauncherStore {
     private var tileOrderBeforeDrag: [String]?
     private var dragPreviewChanged = false
     private let interactionLogThrottle = InteractionLogThrottle()
+    private var preferencesSaveTask: Task<Void, Never>?
 
     /// 创建启动器业务状态。
     ///
@@ -140,7 +141,9 @@ final class LauncherStore {
     /// 由协调器在启动扫描任务前调用。
     func beginRefreshing() {
         contentState = .refreshing
-        statusMessage = apps.isEmpty ? "Finding applications…" : "Refreshing…"
+        statusMessage = apps.isEmpty
+            ? (L10n.isChinese ? "正在查找应用…" : "Finding applications…")
+            : (L10n.isChinese ? "正在刷新…" : "Refreshing…")
         onChange?(.state)
     }
 
@@ -167,7 +170,9 @@ final class LauncherStore {
     /// - Parameter error: 可恢复的刷新错误。
     func failRefreshing(_ error: LauncherRecoverableError) {
         contentState = apps.isEmpty ? .failed(error) : .ready
-        statusMessage = apps.isEmpty ? error.message : "Refresh failed. Showing cached apps."
+        statusMessage = apps.isEmpty
+            ? error.message
+            : (L10n.isChinese ? "刷新失败，正在显示缓存应用。" : "Refresh failed. Showing cached apps.")
         onChange?(.state)
     }
 
@@ -256,6 +261,11 @@ final class LauncherStore {
         }
 
         pageIndex = 0
+        LumaEventLog.shared.writeInteraction(
+            .tile,
+            hidden ? "app.hidden" : "app.unhidden",
+            fields: ["appID": appID]
+        )
         savePreferences()
         onChange?(.content(animated: true))
     }
@@ -537,7 +547,7 @@ final class LauncherStore {
         let validItemIDs = itemIDs.filter { app(withID: $0) != nil }
         let folder = LauncherFolder(
             id: UUID().uuidString,
-            name: uniqueFolderName(name?.trimmedNonEmpty ?? "New Folder"),
+            name: uniqueFolderName(name?.trimmedNonEmpty ?? L10n.text(.newFolder)),
             itemIDs: validItemIDs
         )
 
@@ -816,18 +826,24 @@ final class LauncherStore {
             appFilterMode: appFilterMode
         )
         let store = preferencesStore
-        Task {
+        let previousTask = preferencesSaveTask
+        let saveTask = Task { [weak self] in
+            _ = await previousTask?.result
             do {
                 try await store.savePreferences(preferences)
             } catch {
                 LumaEventLog.shared.write("preferences.save.failed", error.localizedDescription)
                 await MainActor.run {
-                    self.statusMessage = "Preferences could not be saved."
+                    guard let self else { return }
+                    self.statusMessage = L10n.isChinese
+                        ? "偏好设置保存失败。"
+                        : "Preferences could not be saved."
                     self.onChange?(.state)
                     NSSound.beep()
                 }
             }
         }
+        preferencesSaveTask = saveTask
     }
 
     private func uniqueFolderName(_ baseName: String, excluding folderID: String? = nil) -> String {

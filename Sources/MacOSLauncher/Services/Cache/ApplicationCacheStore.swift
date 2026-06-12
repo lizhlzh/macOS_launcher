@@ -48,6 +48,11 @@ actor JSONApplicationCacheStore: ApplicationCacheStoring {
             decoder.dateDecodingStrategy = .iso8601
             let cache = try decoder.decode(ApplicationCache.self, from: data)
             guard cache.schemaVersion == ApplicationCache.currentSchemaVersion else {
+                LumaEventLog.shared.write(
+                    "cache.schemaMismatch",
+                    "current=\(cache.schemaVersion) expected=\(ApplicationCache.currentSchemaVersion)"
+                )
+                try? fileManager.removeItem(at: fileURL)
                 return nil
             }
             return cache

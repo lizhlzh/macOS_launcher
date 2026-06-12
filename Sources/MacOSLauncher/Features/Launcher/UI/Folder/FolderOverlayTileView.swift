@@ -53,12 +53,12 @@ final class FolderOverlayTileView: NSView {
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = NSMenu()
-        let visibilityTitle = store.isAppHidden(app.id) ? "Unhide App" : "Hide App"
+        let visibilityTitle = store.isAppHidden(app.id) ? L10n.text(.unhideApp) : L10n.text(.hideApp)
         menu.addItem(ClosureMenuItem(title: visibilityTitle) { [weak self] in
             guard let self else { return }
             self.onToggleHidden?(self.app)
         })
-        menu.addItem(ClosureMenuItem(title: "Remove from Folder") { [weak self] in
+        menu.addItem(ClosureMenuItem(title: L10n.text(.removeFromFolder)) { [weak self] in
             guard let self else { return }
             self.onRemove?(self.app)
         })

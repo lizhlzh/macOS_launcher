@@ -95,7 +95,7 @@ final class HeaderButton: NSControl {
         let measuredTitleWidth = title.isEmpty
             ? CGFloat.zero
             : ceil((title as NSString).size(withAttributes: [.font: textFont]).width)
-        let maxTitleWidth = max(0, bounds.width - iconSize - spacing - 24)
+        let maxTitleWidth = max(0, bounds.width - iconSize - spacing - 14)
         let titleWidth = min(measuredTitleWidth, maxTitleWidth)
         let groupWidth = iconSize + spacing + titleWidth
         let startX = max(8, floor((bounds.width - groupWidth) / 2))

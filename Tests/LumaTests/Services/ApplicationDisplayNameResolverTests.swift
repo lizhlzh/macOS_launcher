@@ -39,3 +39,32 @@ func bundleMetadataIsUsedWhenFileNamesAreUnavailable() {
 
     #expect(name == "Localized Name")
 }
+
+@Test
+func preferredLocalizedInfoPlistNamePrecedesBundleMetadata() {
+    let name = ApplicationDisplayNameResolver.resolve(
+        resourceLocalizedName: nil,
+        fileManagerDisplayName: nil,
+        preferredLocalizedInfoPlistName: "百度网盘",
+        localizedInfo: ["CFBundleDisplayName": "BaiduNetdisk"],
+        info: ["CFBundleName": "BaiduNetdisk"],
+        bundleIdentifier: "com.baidu.netdisk",
+        fallbackName: "BaiduNetdisk.app"
+    )
+
+    #expect(name == "百度网盘")
+}
+
+@Test
+func knownOverrideMapsSpecificThirdPartyApps() {
+    let name = ApplicationDisplayNameResolver.resolve(
+        resourceLocalizedName: nil,
+        fileManagerDisplayName: "BaiduNetdisk.app",
+        localizedInfo: nil,
+        info: nil,
+        bundleIdentifier: "com.baidu.netdisk",
+        fallbackName: "BaiduNetdisk.app"
+    )
+
+    #expect(name == "百度网盘")
+}

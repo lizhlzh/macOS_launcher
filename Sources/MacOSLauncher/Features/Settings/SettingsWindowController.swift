@@ -13,7 +13,7 @@ final class SettingsWindowController: NSWindowController {
     private let environment: AppEnvironment
     private let hotKeyStatusLabel = NSTextField(wrappingLabelWithString: "")
     private let permissionStatusLabel = NSTextField(wrappingLabelWithString: "")
-    private let loginItemCheckbox = NSButton(checkboxWithTitle: "Launch Luma at login", target: nil, action: nil)
+    private let loginItemCheckbox = NSButton(checkboxWithTitle: L10n.text(.launchAtLogin), target: nil, action: nil)
 
     /// 创建设置窗口。
     ///
@@ -26,7 +26,7 @@ final class SettingsWindowController: NSWindowController {
             backing: .buffered,
             defer: false
         )
-        window.title = "Luma Settings"
+        window.title = L10n.text(.settingsTitle)
         window.isReleasedWhenClosed = false
         window.center()
         super.init(window: window)
@@ -53,7 +53,7 @@ final class SettingsWindowController: NSWindowController {
     /// - Parameter error: 最近一次快捷键注册错误；为 `nil` 表示注册成功。
     func updateHotKeyStatus(error: HotKeyRegistrationError?) {
         hotKeyStatusLabel.stringValue = error?.localizedDescription
-            ?? "Control-Option-Space is registered."
+            ?? (L10n.isChinese ? "Control-Option-Space 已注册。" : "Control-Option-Space is registered.")
         hotKeyStatusLabel.textColor = error == nil ? .secondaryLabelColor : .systemRed
     }
 
@@ -61,11 +61,11 @@ final class SettingsWindowController: NSWindowController {
     private func makeTabs() -> NSTabViewController {
         let tabs = NSTabViewController()
         tabs.tabStyle = .toolbar
-        tabs.addTabViewItem(tab(title: "General", symbol: "gearshape", view: generalView()))
-        tabs.addTabViewItem(tab(title: "Hot Key", symbol: "keyboard", view: hotKeyView()))
-        tabs.addTabViewItem(tab(title: "Permissions", symbol: "hand.raised", view: permissionsView()))
-        tabs.addTabViewItem(tab(title: "Appearance", symbol: "circle.lefthalf.filled", view: appearanceView()))
-        tabs.addTabViewItem(tab(title: "Advanced", symbol: "wrench.and.screwdriver", view: advancedView()))
+        tabs.addTabViewItem(tab(title: L10n.text(.general), symbol: "gearshape", view: generalView()))
+        tabs.addTabViewItem(tab(title: L10n.text(.hotKey), symbol: "keyboard", view: hotKeyView()))
+        tabs.addTabViewItem(tab(title: L10n.text(.permissions), symbol: "hand.raised", view: permissionsView()))
+        tabs.addTabViewItem(tab(title: L10n.text(.appearance), symbol: "circle.lefthalf.filled", view: appearanceView()))
+        tabs.addTabViewItem(tab(title: L10n.text(.advanced), symbol: "wrench.and.screwdriver", view: advancedView()))
         return tabs
     }
 
@@ -88,54 +88,54 @@ final class SettingsWindowController: NSWindowController {
     private func generalView() -> NSView {
         loginItemCheckbox.target = self
         loginItemCheckbox.action = #selector(toggleLoginItem)
-        let openButton = NSButton(title: "Open Launcher", target: self, action: #selector(openLauncher))
+        let openButton = NSButton(title: L10n.text(.openLauncher), target: self, action: #selector(openLauncher))
         return settingsView(
-            title: "General",
-            description: "Luma remains running when the Launcher is hidden. Command-Q quits the app.",
+            title: L10n.text(.general),
+            description: L10n.text(.generalDescription),
             controls: [loginItemCheckbox, openButton]
         )
     }
 
     private func hotKeyView() -> NSView {
         settingsView(
-            title: "Hot Key",
-            description: "Use the global shortcut from any application.",
+            title: L10n.text(.hotKey),
+            description: L10n.text(.hotKeyDescription),
             controls: [hotKeyStatusLabel]
         )
     }
 
     private func permissionsView() -> NSView {
         let accessibility = NSButton(
-            title: "Open Accessibility Settings",
+            title: L10n.text(.openAccessibilitySettings),
             target: self,
             action: #selector(openAccessibilitySettings)
         )
         let input = NSButton(
-            title: "Open Input Monitoring Settings",
+            title: L10n.text(.openInputMonitoringSettings),
             target: self,
             action: #selector(openInputMonitoringSettings)
         )
         return settingsView(
-            title: "Permissions",
-            description: "Permissions are optional. Luma keeps working when they are unavailable.",
+            title: L10n.text(.permissions),
+            description: L10n.text(.permissionsDescription),
             controls: [permissionStatusLabel, accessibility, input]
         )
     }
 
     private func appearanceView() -> NSView {
         settingsView(
-            title: "Appearance",
-            description: "Luma follows the system appearance and accessibility contrast settings.",
+            title: L10n.text(.appearance),
+            description: L10n.text(.appearanceDescription),
             controls: []
         )
     }
 
     private func advancedView() -> NSView {
-        let rescan = NSButton(title: "Rescan Applications", target: self, action: #selector(rescan))
-        let logs = NSButton(title: "Reveal Logs", target: self, action: #selector(revealLogs))
+        let rescan = NSButton(title: L10n.text(.menuRescan), target: self, action: #selector(rescan))
+        let logs = NSButton(title: L10n.text(.menuRevealLogs), target: self, action: #selector(revealLogs))
         return settingsView(
-            title: "Advanced",
-            description: "Refresh the local application index or inspect diagnostic logs.",
+            title: L10n.text(.advanced),
+            description: L10n.text(.advancedDescription),
             controls: [rescan, logs]
         )
     }
@@ -179,8 +179,9 @@ final class SettingsWindowController: NSWindowController {
         loginItemCheckbox.state = environment.loginItemManager.isEnabled ? .on : .off
         let status = environment.permissionManager.status
         permissionStatusLabel.stringValue =
-            "Accessibility: \(status.accessibilityGranted ? "Granted" : "Not granted")\n"
-            + "Input Monitoring: \(status.inputMonitoringGranted ? "Granted" : "Not granted")"
+            L10n.text(.accessibilityGranted(status.accessibilityGranted))
+            + "\n"
+            + L10n.text(.inputMonitoringGranted(status.inputMonitoringGranted))
     }
 
     @objc private func toggleLoginItem() {

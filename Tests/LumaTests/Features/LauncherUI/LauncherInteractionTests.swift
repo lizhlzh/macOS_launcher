@@ -145,7 +145,7 @@ func rootViewRoutesHeaderCoordinatesToHeaderButton() throws {
 
     let hitView = try #require(rootView.hitTest(rawPoint(fromLayoutPoint: sortCenter, in: rootView)))
     #expect(hitView is HeaderButton)
-    #expect(hitView.accessibilityLabel() == "Sort")
+    #expect(hitView.accessibilityLabel() == L10n.text(.sortTooltip))
 }
 
 @Test

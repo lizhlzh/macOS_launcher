@@ -32,9 +32,9 @@ enum SortMode: String, Codable, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .custom:
-            "Custom"
+            L10n.text(.sortCustom)
         case .name:
-            "A-Z"
+            L10n.text(.sortName)
         }
     }
 }
@@ -50,11 +50,11 @@ enum AppFilterMode: String, Codable, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .visibleOnly:
-            "Visible Apps"
+            L10n.text(.filterVisible)
         case .all:
-            "All Apps"
+            L10n.text(.filterAll)
         case .hiddenOnly:
-            "Hidden Apps"
+            L10n.text(.filterHidden)
         }
     }
 }
@@ -102,7 +102,7 @@ struct LauncherGridLayout: Codable, Hashable, Sendable {
     }
 
     var title: String {
-        "\(rows) x \(columns)"
+        "\(rows) × \(columns)"
     }
 }
 
@@ -166,7 +166,7 @@ struct LauncherPreferences: Codable {
 
 /// 最近一次成功扫描缓存，用于启动时立即展示内容。
 struct ApplicationCache: Codable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
     var applications: [LauncherAppInfo]
     var lastScannedAt: Date
