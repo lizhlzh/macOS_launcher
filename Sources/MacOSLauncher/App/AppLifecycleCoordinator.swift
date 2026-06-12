@@ -50,7 +50,7 @@ final class AppLifecycleCoordinator {
             self?.showLauncher()
         }
         menuController.onShowLauncher = { [weak self] in self?.showLauncher() }
-        menuController.onHideLauncher = { [weak self] in self?.launcherController.hide() }
+        menuController.onHideLauncher = { [weak self] in self?.launcherController.hide(reason: "menu") }
         menuController.onShowSettings = { [weak self] in self?.showSettings() }
         menuController.onRescan = { [weak self] in self?.refreshApplications() }
         menuController.onFocusSearch = { [weak self] in self?.focusSearch() }
@@ -70,6 +70,15 @@ final class AppLifecycleCoordinator {
         configureHotKey()
         configureInputMonitors()
         logPermissions()
+        LumaEventLog.shared.writeInteraction(
+            .lifecycle,
+            "app.start",
+            fields: [
+                "appVersion": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "nil",
+                "build": Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "nil",
+                "screenCount": NSScreen.screens.count
+            ]
+        )
         launcherController.show()
 
         Task { [weak self] in
@@ -254,7 +263,7 @@ final class AppLifecycleCoordinator {
             launcherController.show()
         } else if launcherController.isVisible, pinchAccumulator >= 0.35 {
             pinchAccumulator = 0
-            launcherController.hide()
+            launcherController.hide(reason: "pinch")
         }
 
         if event.phase.contains(.ended) || event.phase.contains(.cancelled) {

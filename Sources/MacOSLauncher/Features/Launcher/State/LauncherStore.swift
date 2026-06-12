@@ -12,6 +12,7 @@ enum LauncherStoreChange {
     case pageSettled(previousIndex: Int, previousOffset: CGFloat)
     case editing
     case presentation
+    case dragPreview
 }
 
 /// 在主线程管理应用、文件夹、排序、搜索和分页业务状态。
@@ -38,6 +39,7 @@ final class LauncherStore {
     private(set) var contentState: LauncherContentState = .ready
     private(set) var lastScannedAt: Date?
     private(set) var statusMessage: String?
+    private(set) var currentDragID: String?
 
     var onChange: ((LauncherStoreChange) -> Void)?
     var onRefreshRequested: (() -> Void)?
@@ -48,6 +50,7 @@ final class LauncherStore {
     private var pageDragRawOffset: CGFloat = 0
     private var tileOrderBeforeDrag: [String]?
     private var dragPreviewChanged = false
+    private let interactionLogThrottle = InteractionLogThrottle()
 
     /// 创建启动器业务状态。
     ///
@@ -265,10 +268,20 @@ final class LauncherStore {
             return
         }
 
+        let previousLength = searchText.count
         searchText = value
         pageIndex = 0
         pageDragRawOffset = 0
         pageDragOffset = 0
+        LumaEventLog.shared.writeInteraction(
+            .search,
+            "search.changed",
+            fields: [
+                "isEmpty": value.isEmpty,
+                "length": value.count,
+                "previousLength": previousLength
+            ]
+        )
         onChange?(.search)
     }
 
@@ -282,6 +295,16 @@ final class LauncherStore {
         pageDragOffset = 0
         isEditing = false
         draggedTileID = nil
+        currentDragID = nil
+        LumaEventLog.shared.writeInteraction(
+            .lifecycle,
+            "launcher.prepare",
+            fields: [
+                "pageIndex": pageIndex,
+                "isEditing": isEditing,
+                "visibleTiles": visibleTiles.count
+            ]
+        )
         onChange?(.presentation)
     }
 
@@ -307,6 +330,14 @@ final class LauncherStore {
     func beginPageDrag() {
         pageDragRawOffset = 0
         pageDragOffset = 0
+        LumaEventLog.shared.writeInteraction(
+            .page,
+            "page.drag.begin",
+            fields: [
+                "pageIndex": pageIndex,
+                "pageCount": pageCount
+            ]
+        )
         onChange?(.pageDrag)
     }
 
@@ -322,6 +353,19 @@ final class LauncherStore {
 
         pageDragRawOffset += deltaX
         pageDragOffset = min(max(pageDragRawOffset, -pageWidth), pageWidth)
+        if interactionLogThrottle.shouldLog("store.page.drag.changed", interval: 0.10) {
+            LumaEventLog.shared.writeInteraction(
+                .page,
+                "page.drag.changed",
+                fields: [
+                    "pageIndex": pageIndex,
+                    "deltaX": String(format: "%.1f", deltaX),
+                    "rawOffset": String(format: "%.1f", pageDragRawOffset),
+                    "dragOffset": String(format: "%.1f", pageDragOffset),
+                    "pageWidth": String(format: "%.1f", pageWidth)
+                ]
+            )
+        }
         onChange?(.pageDrag)
     }
 
@@ -346,6 +390,16 @@ final class LauncherStore {
 
         pageDragRawOffset = 0
         pageDragOffset = 0
+        LumaEventLog.shared.writeInteraction(
+            .page,
+            "page.drag.end",
+            fields: [
+                "previousIndex": previousIndex,
+                "pageIndex": pageIndex,
+                "previousOffset": String(format: "%.1f", previousOffset),
+                "pageWidth": String(format: "%.1f", pageWidth)
+            ]
+        )
         onChange?(.pageSettled(previousIndex: previousIndex, previousOffset: previousOffset))
     }
 
@@ -392,7 +446,17 @@ final class LauncherStore {
         tileOrderBeforeDrag = tileOrder
         dragPreviewChanged = false
         draggedTileID = tileID
+        currentDragID = UUID().uuidString
         isEditing = true
+        LumaEventLog.shared.writeInteraction(
+            .drag,
+            "drag.begin",
+            fields: [
+                "dragID": currentDragID ?? "nil",
+                "tileID": tileID,
+                "sortMode": sortMode.title
+            ]
+        )
         onChange?(.editing)
     }
 
@@ -403,18 +467,28 @@ final class LauncherStore {
     ///
     /// - Parameter commit: 是否提交本次拖拽预览。
     func endDraggingTile(commit: Bool) {
+        let dragID = currentDragID
         if commit {
             if dragPreviewChanged {
                 savePreferences()
             }
         } else if let tileOrderBeforeDrag {
             tileOrder = tileOrderBeforeDrag
-            onChange?(.content(animated: true))
+            onChange?(.content(animated: false))
         }
 
         tileOrderBeforeDrag = nil
         dragPreviewChanged = false
         draggedTileID = nil
+        currentDragID = nil
+        LumaEventLog.shared.writeInteraction(
+            .drag,
+            "drag.end",
+            fields: [
+                "dragID": dragID ?? "nil",
+                "commit": commit
+            ]
+        )
         onChange?(.editing)
     }
 
@@ -574,7 +648,18 @@ final class LauncherStore {
         guard updatedOrder != tileOrder else { return }
         tileOrder = updatedOrder
         dragPreviewChanged = true
-        onChange?(.content(animated: true))
+        if interactionLogThrottle.shouldLog("store.drag.preview.\(targetID)", interval: 0.08) {
+            LumaEventLog.shared.writeInteraction(
+                .drag,
+                "drag.previewMove",
+                fields: [
+                    "dragID": currentDragID ?? "nil",
+                    "draggedID": draggedID,
+                    "targetID": targetID
+                ]
+            )
+        }
+        onChange?(.dragPreview)
     }
 
     func folder(withID id: String) -> LauncherFolder? {

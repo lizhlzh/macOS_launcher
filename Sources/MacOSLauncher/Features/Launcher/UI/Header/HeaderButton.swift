@@ -9,6 +9,7 @@ final class HeaderButton: NSControl {
     private let hoverShape = CAShapeLayer()
     private let symbolView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
+    var debugName = "unknown"
 
     var image: NSImage? {
         didSet {
@@ -147,33 +148,60 @@ final class HeaderButton: NSControl {
     }
 
     override func mouseDown(with event: NSEvent) {
-        guard isEnabled, let window else { return }
+        LumaEventLog.shared.writeInteraction(
+            .header,
+            "header.mouseDown",
+            fields: [
+                "button": debugName,
+                "isEnabled": isEnabled,
+                "localPoint": lumaLogPoint(convert(event.locationInWindow, from: nil)),
+                "frame": lumaLogRect(frame),
+                "windowIsKey": window?.isKeyWindow ?? false,
+                "firstResponder": lumaLogOptional(window?.firstResponder)
+            ]
+        )
+        guard isEnabled else {
+            LumaEventLog.shared.writeInteraction(
+                .header,
+                "header.actionSkipped",
+                fields: [
+                    "button": debugName,
+                    "reason": "disabled"
+                ]
+            )
+            return
+        }
 
         pressed = true
         updateBackground(animated: false)
 
-        while let trackingEvent = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
-            let localPoint = convert(trackingEvent.locationInWindow, from: nil)
-            let isInside = bounds.contains(localPoint)
-
-            if trackingEvent.type == .leftMouseDragged {
-                if pressed != isInside {
-                    pressed = isInside
-                    updateBackground(animated: false)
-                }
-                continue
-            }
-
-            pressed = false
-            updateBackground(animated: true)
-            if isInside, let action {
-                NSApp.sendAction(action, to: target, from: self)
-            }
-            return
+        if let action {
+            LumaEventLog.shared.writeInteraction(
+                .header,
+                "header.sendAction",
+                fields: [
+                    "button": debugName,
+                    "action": NSStringFromSelector(action),
+                    "targetType": target.map { String(reflecting: type(of: $0)) } ?? "nil"
+                ]
+            )
+            sendAction(action, to: target)
+        } else {
+            LumaEventLog.shared.writeInteraction(
+                .header,
+                "header.actionSkipped",
+                fields: [
+                    "button": debugName,
+                    "reason": "missingAction"
+                ]
+            )
         }
 
-        pressed = false
-        updateBackground(animated: true)
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pressed = false
+            self.updateBackground(animated: true)
+        }
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {

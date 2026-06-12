@@ -11,6 +11,8 @@ final class LauncherController {
 
     private var panel: LauncherPanel?
     private var isAnimating = false
+    private var currentPresentationID: String?
+    private let interactionLogThrottle = InteractionLogThrottle()
 
     /// 创建启动器窗口控制器。
     ///
@@ -26,7 +28,7 @@ final class LauncherController {
 
     /// 在既有显示和隐藏动画路径之间切换。
     func toggle() {
-        isVisible ? hide() : show()
+        isVisible ? hide(reason: "toggle") : show()
     }
 
     /// 将离散翻页请求转发给业务状态。
@@ -41,7 +43,7 @@ final class LauncherController {
         if store.isEditing {
             store.endEditing()
         } else {
-            hide()
+            hide(reason: "escape")
         }
     }
 
@@ -67,12 +69,25 @@ final class LauncherController {
         }
 
         let screenFrame = targetScreen()?.frame ?? .zero
+        currentPresentationID = UUID().uuidString
         panel.setFrame(screenFrame, display: true)
         panel.alphaValue = 0
 
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         store.prepareForPresentation()
+        LumaEventLog.shared.writeInteraction(
+            .lifecycle,
+            "launcher.show",
+            fields: [
+                "presentationID": currentPresentationID ?? "nil",
+                "targetScreen": lumaLogRect(screenFrame),
+                "panelFrame": lumaLogRect(panel.frame),
+                "pageIndex": store.pageIndex,
+                "visibleTiles": store.visibleTiles.count,
+                "grid": "\(store.gridLayout.rows)x\(store.gridLayout.columns)"
+            ]
+        )
         let rootView = panel.contentView as? LauncherRootView
 
         isAnimating = true
@@ -91,12 +106,21 @@ final class LauncherController {
     }
 
     /// 执行既有淡出动画，完成后将 Panel 移出屏幕。
-    func hide() {
+    func hide(reason: String = "unspecified") {
         guard let panel, panel.isVisible, !isAnimating else {
             return
         }
+        let presentationID = currentPresentationID
 
         isAnimating = true
+        LumaEventLog.shared.writeInteraction(
+            .lifecycle,
+            "launcher.hide",
+            fields: [
+                "presentationID": presentationID ?? "nil",
+                "reason": reason
+            ]
+        )
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.16
             context.timingFunction = CAMediaTimingFunction(name: .easeIn)
@@ -105,6 +129,7 @@ final class LauncherController {
             Task { @MainActor in
                 panel?.orderOut(nil)
                 panel?.alphaValue = 1
+                self?.currentPresentationID = nil
                 self?.isAnimating = false
             }
         }
@@ -142,6 +167,19 @@ final class LauncherController {
                 return
             }
 
+            if self.interactionLogThrottle.shouldLog("panel.scroll.\(phase)", interval: 0.10) {
+                LumaEventLog.shared.writeInteraction(
+                    .page,
+                    "panel.scrollWheel",
+                    fields: [
+                        "phase": phase.rawValue,
+                        "deltaX": String(format: "%.1f", deltaX),
+                        "pageWidth": String(format: "%.1f", pageWidth),
+                        "presentationID": self.currentPresentationID ?? "nil"
+                    ]
+                )
+            }
+
             switch phase {
             case .began:
                 self.store.beginPageDrag()
@@ -155,8 +193,8 @@ final class LauncherController {
         let rootView = LauncherRootView(
             frame: panel.contentRect(forFrameRect: panel.frame),
             store: store,
-            onClose: { [weak self] in
-                self?.hide()
+            onClose: { [weak self] reason in
+                self?.hide(reason: reason)
             },
             onEscape: { [weak self] in
                 self?.handleEscape()
@@ -343,8 +381,7 @@ final class LauncherPanel: NSPanel {
     }
 }
 
-/// `LauncherPanel` 向 Controller 发送的标准化滚动阶段。
-enum PageScrollPhase {
+enum PageScrollPhase: String {
     case began
     case changed
     case ended

@@ -10,7 +10,7 @@ import QuartzCore
 @MainActor
 final class LauncherRootView: NSView, NSTextFieldDelegate {
     private let store: LauncherStore
-    private let onClose: () -> Void
+    private let onClose: (String) -> Void
     private let onEscape: () -> Void
 
     private let effectView = NSVisualEffectView()
@@ -30,6 +30,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
     private let pageDots = PageDotsView()
 
     private var folderOverlay: FolderOverlayView?
+    private let interactionLogThrottle = InteractionLogThrottle()
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
@@ -41,7 +42,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
     ///   - store: 启动器业务状态。
     ///   - onClose: 用户请求关闭启动器时执行的闭包。
     ///   - onEscape: 用户按 Escape 时执行的闭包。
-    init(frame: NSRect, store: LauncherStore, onClose: @escaping () -> Void, onEscape: @escaping () -> Void) {
+    init(frame: NSRect, store: LauncherStore, onClose: @escaping (String) -> Void, onEscape: @escaping () -> Void) {
         self.store = store
         self.onClose = onClose
         self.onEscape = onEscape
@@ -139,7 +140,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
             }
             return
         }
-        onClose()
+        onClose("outsideClick")
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -150,6 +151,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         if let folderOverlay {
             let overlayPoint = convert(point, to: folderOverlay)
             if folderOverlay.bounds.contains(overlayPoint) {
+                logRootHitTest(point: point, result: "folderOverlay")
                 return folderOverlay.hitTest(overlayPoint)
             }
         }
@@ -169,19 +171,28 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
             for control in controls {
                 let controlPoint = headerView.convert(headerPoint, to: control)
                 if control.bounds.contains(controlPoint) {
+                    logRootHitTest(
+                        point: point,
+                        result: "header.control",
+                        detail: (control as? HeaderButton)?.debugName
+                    )
                     return control.hitTest(controlPoint) ?? control
                 }
             }
 
             if searchField.frame.contains(headerPoint) {
                 let fieldPoint = headerView.convert(headerPoint, to: searchField)
+                logRootHitTest(point: point, result: "header.search", detail: "searchField")
                 return searchField.hitTest(fieldPoint) ?? searchField
             }
 
+            logRootHitTest(point: point, result: "header.background")
             return headerView
         }
 
-        return super.hitTest(point)
+        let result = super.hitTest(point)
+        logRootHitTest(point: point, result: result == nil ? "nil" : "super")
+        return result
     }
 
     override func keyDown(with event: NSEvent) {
@@ -258,6 +269,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
             symbol: "arrow.up.arrow.down",
             title: store.sortMode.title,
             toolTip: "Sort",
+            debugName: "sort",
             action: #selector(showSortMenu)
         )
         configureButton(
@@ -265,6 +277,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
             symbol: "rectangle.grid.3x2",
             title: store.gridLayout.title,
             toolTip: "Layout",
+            debugName: "layout",
             action: #selector(showLayoutMenu)
         )
         configureButton(
@@ -272,6 +285,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
             symbol: "slider.horizontal.3",
             title: nil,
             toolTip: "Edit",
+            debugName: "edit",
             action: #selector(toggleEditing)
         )
         configureButton(
@@ -279,6 +293,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
             symbol: "line.3.horizontal.decrease.circle",
             title: nil,
             toolTip: "Filter Apps",
+            debugName: "filter",
             action: #selector(showFilterMenu)
         )
         configureButton(
@@ -286,6 +301,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
             symbol: "folder.badge.plus",
             title: nil,
             toolTip: "New Folder",
+            debugName: "folder",
             action: #selector(createFolder)
         )
         configureButton(
@@ -293,6 +309,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
             symbol: "arrow.clockwise",
             title: nil,
             toolTip: "Rescan Applications",
+            debugName: "rescan",
             action: #selector(rescanApplications)
         )
         configureButton(
@@ -300,6 +317,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
             symbol: "xmark",
             title: nil,
             toolTip: "Close",
+            debugName: "close",
             action: #selector(closeLauncher)
         )
     }
@@ -317,10 +335,12 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         symbol: String,
         title: String?,
         toolTip: String,
+        debugName: String,
         action: Selector
     ) {
         button.target = self
         button.action = action
+        button.debugName = debugName
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: toolTip)?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .semibold))
         button.title = title ?? ""
@@ -361,6 +381,9 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
             updateStatus()
         case .search:
             pager.reloadSearchResults()
+            updatePageDots()
+        case .dragPreview:
+            pager.scheduleDragPreviewAnimation()
             updatePageDots()
         case .pageDrag:
             pager.setPage(index: store.pageIndex, dragOffset: store.pageDragOffset, animated: false)
@@ -527,6 +550,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
     }
 
     @objc private func showSortMenu() {
+        LumaEventLog.shared.writeInteraction(.header, "header.action.showSortMenu")
         let menu = NSMenu()
         menu.addItem(menuItem("Custom", action: #selector(setCustomSort), state: store.sortMode == .custom))
         menu.addItem(menuItem("A-Z", action: #selector(setNameSort), state: store.sortMode == .name))
@@ -534,6 +558,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
     }
 
     @objc private func showLayoutMenu() {
+        LumaEventLog.shared.writeInteraction(.header, "header.action.showLayoutMenu")
         let menu = NSMenu()
         let countItem = NSMenuItem(title: "\(store.gridLayout.itemsPerPage) apps per page", action: nil, keyEquivalent: "")
         countItem.isEnabled = false
@@ -571,6 +596,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
     }
 
     @objc private func showFilterMenu() {
+        LumaEventLog.shared.writeInteraction(.header, "header.action.showFilterMenu")
         let menu = NSMenu()
         menu.addItem(menuItem("Visible Apps", action: #selector(showVisibleAppsOnly), state: store.appFilterMode == .visibleOnly))
         menu.addItem(menuItem("All Apps", action: #selector(showAllApps), state: store.appFilterMode == .all))
@@ -627,21 +653,25 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
     }
 
     @objc private func toggleEditing() {
+        LumaEventLog.shared.writeInteraction(.header, "header.action.toggleEditing")
         store.toggleEditing()
     }
 
     @objc private func createFolder() {
+        LumaEventLog.shared.writeInteraction(.header, "header.action.createFolder")
         showNamePrompt(title: "New Folder", initialValue: "") { [weak self] name in
             self?.store.createFolder(named: name)
         }
     }
 
     @objc private func rescanApplications() {
+        LumaEventLog.shared.writeInteraction(.header, "header.action.rescan")
         store.requestRefresh()
     }
 
     @objc private func closeLauncher() {
-        onClose()
+        LumaEventLog.shared.writeInteraction(.header, "header.action.close")
+        onClose("closeButton")
     }
 
     /// 显示新建或重命名文件夹的文本输入弹窗。
@@ -678,7 +708,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         }
         overlay.onLaunch = { [weak self] app in
             self?.store.launchApp(app)
-            self?.onClose()
+            self?.onClose("appLaunch")
         }
         overlay.onRename = { [weak self] folder in
             self?.showNamePrompt(title: "Rename Folder", initialValue: folder.name) { name in
@@ -704,6 +734,24 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         }
         overlay.update(folder: folder)
     }
+
+    private func logRootHitTest(point: NSPoint, result: String, detail: String? = nil) {
+        guard interactionLogThrottle.shouldLog("root.hitTest.\(result).\(detail ?? "none")", interval: 0.15) else {
+            return
+        }
+        LumaEventLog.shared.writeInteraction(
+            .hitTest,
+            "root.hitTest",
+            fields: [
+                "point": lumaLogPoint(point),
+                "result": result,
+                "detail": detail ?? "nil",
+                "headerFrame": lumaLogRect(headerView.frame),
+                "pagerFrame": lumaLogRect(pager.frame),
+                "folderOverlayVisible": folderOverlay != nil
+            ]
+        )
+    }
 }
 
 extension LauncherRootView: LauncherPagerDelegate {
@@ -711,7 +759,7 @@ extension LauncherRootView: LauncherPagerDelegate {
         switch tile.kind {
         case let .app(app):
             store.launchApp(app)
-            onClose()
+            onClose("appLaunch")
         case let .folder(folder, _):
             showFolder(folder)
         }
@@ -727,7 +775,7 @@ extension LauncherRootView: LauncherPagerDelegate {
         case let .app(app):
             let open = ClosureMenuItem(title: "Open") { [weak self] in
                 self?.store.launchApp(app)
-                self?.onClose()
+                self?.onClose("appLaunch")
             }
             menu.addItem(open)
             menu.addItem(ClosureMenuItem(title: "Show in Finder") { [weak self] in
@@ -799,6 +847,10 @@ final class LauncherPagerView: NSView {
     private let horizontalContentInset: CGFloat = 48
     private var interactionSuspensionGeneration = 0
     private var isInteractionSuspended = false
+    private var dragPreviewScheduled = false
+    private var needsDragPreviewAfterCurrentPass = false
+    private var currentDragCommitted = false
+    private let interactionLogThrottle = InteractionLogThrottle()
 
     override var isFlipped: Bool { true }
 
@@ -840,13 +892,56 @@ final class LauncherPagerView: NSView {
             return nil
         }
         if isInteractionSuspended {
+            if interactionLogThrottle.shouldLog("pager.hitTest.suspended", interval: 0.15) {
+                LumaEventLog.shared.writeInteraction(
+                    .hitTest,
+                    "pager.hitTest.begin",
+                    fields: [
+                        "pointInPager": lumaLogPoint(point),
+                        "bounds": lumaLogRect(bounds),
+                        "isInteractionSuspended": isInteractionSuspended,
+                        "pageIndex": store.pageIndex,
+                        "renderedPageCount": renderedPageCount,
+                        "contentOrigin": lumaLogPoint(contentView.frame.origin),
+                        "contentSize": lumaLogSize(contentView.frame.size),
+                        "pageViews": pageViews.keys.sorted().map(String.init).joined(separator: ",")
+                    ]
+                )
+            }
             return self
         }
 
+        if interactionLogThrottle.shouldLog("pager.hitTest.begin", interval: 0.15) {
+            LumaEventLog.shared.writeInteraction(
+                .hitTest,
+                "pager.hitTest.begin",
+                fields: [
+                    "pointInPager": lumaLogPoint(point),
+                    "bounds": lumaLogRect(bounds),
+                    "isInteractionSuspended": isInteractionSuspended,
+                    "pageIndex": store.pageIndex,
+                    "renderedPageCount": renderedPageCount,
+                    "contentOrigin": lumaLogPoint(contentView.frame.origin),
+                    "contentSize": lumaLogSize(contentView.frame.size),
+                    "pageViews": pageViews.keys.sorted().map(String.init).joined(separator: ",")
+                ]
+            )
+        }
         if let tileView = hitTestTile(at: point, from: self),
            activeTileIDs.contains(tileView.tileID),
            tileView.alphaValue > 0.05 {
+            LumaEventLog.shared.writeInteraction(
+                .hitTest,
+                "pager.hitTest.result",
+                fields: [
+                    "result": "tile",
+                    "tileID": tileView.tileID
+                ]
+            )
             return tileView
+        }
+        if interactionLogThrottle.shouldLog("pager.hitTest.nil", interval: 0.15) {
+            LumaEventLog.shared.writeInteraction(.hitTest, "pager.hitTest.result", fields: ["result": "nil"])
         }
         return nil
     }
@@ -855,6 +950,7 @@ final class LauncherPagerView: NSView {
     ///
     /// - Parameter animated: 是否为新增、删除和位置变化执行动画。
     func reload(animated: Bool) {
+        let start = CACurrentMediaTime()
         replicaRefreshWorkItem?.cancel()
         replicaRefreshWorkItem = nil
         if animated {
@@ -865,13 +961,41 @@ final class LauncherPagerView: NSView {
             setPageRasterizationEnabled(true)
             performReload(animated: false, refreshReplicas: true, retargetRunningAnimations: false)
         }
+        LumaEventLog.shared.writeInteraction(
+            .performance,
+            "pager.reload",
+            fields: [
+                "animated": animated,
+                "durationMS": Int((CACurrentMediaTime() - start) * 1_000)
+            ]
+        )
     }
 
-    /// 使用适合快速变化搜索结果的动画协调路径。
     func reloadSearchResults() {
         replicaRefreshWorkItem?.cancel()
         setPageRasterizationEnabled(true)
         performReload(animated: false, refreshReplicas: true, retargetRunningAnimations: false)
+    }
+
+    func scheduleDragPreviewAnimation() {
+        if dragPreviewScheduled {
+            needsDragPreviewAfterCurrentPass = true
+            return
+        }
+
+        dragPreviewScheduled = true
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+
+            self.dragPreviewScheduled = false
+            self.applyDragPreview()
+
+            if self.needsDragPreviewAfterCurrentPass {
+                self.needsDragPreviewAfterCurrentPass = false
+                self.scheduleDragPreviewAnimation()
+            }
+        }
     }
 
     private func scheduleRenderStabilization(after delay: TimeInterval) {
@@ -914,6 +1038,7 @@ final class LauncherPagerView: NSView {
         retargetRunningAnimations: Bool
     ) {
         guard bounds.width > 0, bounds.height > 0 else { return }
+        let start = CACurrentMediaTime()
 
         metrics = LauncherGridMetrics(
             size: CGSize(
@@ -1072,6 +1197,16 @@ final class LauncherPagerView: NSView {
         }
 
         setPage(index: store.pageIndex, dragOffset: store.pageDragOffset, animated: false)
+        LumaEventLog.shared.writeInteraction(
+            .performance,
+            "pager.performReload",
+            fields: [
+                "animated": animated,
+                "tiles": tiles.count,
+                "pages": pageCount,
+                "durationMS": Int((CACurrentMediaTime() - start) * 1_000)
+            ]
+        )
     }
 
     private func prepareForAnimationRetarget(_ view: NSView) {
@@ -1140,6 +1275,16 @@ final class LauncherPagerView: NSView {
         let recenterAfterAnimation = shouldRecenterAfterAnimation
         let recenterOrigin = NSPoint(x: realTargetX, y: 0)
         if animated {
+            LumaEventLog.shared.writeInteraction(
+                .page,
+                "pager.setPage",
+                fields: [
+                    "pageIndex": index,
+                    "dragOffset": String(format: "%.1f", dragOffset),
+                    "animated": animated,
+                    "contentOriginX": String(format: "%.1f", origin.x)
+                ]
+            )
             suspendInteraction(for: 0.40)
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0.38
@@ -1161,6 +1306,20 @@ final class LauncherPagerView: NSView {
                 }
             }
         } else {
+            interactionSuspensionGeneration += 1
+            isInteractionSuspended = false
+            if interactionLogThrottle.shouldLog("pager.setPage.immediate", interval: 0.10) {
+                LumaEventLog.shared.writeInteraction(
+                    .page,
+                    "pager.setPage",
+                    fields: [
+                        "pageIndex": index,
+                        "dragOffset": String(format: "%.1f", dragOffset),
+                        "animated": animated,
+                        "contentOriginX": String(format: "%.1f", origin.x)
+                    ]
+                )
+            }
             contentView.setFrameOrigin(origin)
         }
     }
@@ -1185,6 +1344,7 @@ final class LauncherPagerView: NSView {
 
     /// 截取首尾页面快照，用于渲染连续循环翻页。
     private func refreshEdgeReplicas() {
+        let start = CACurrentMediaTime()
         guard renderedPageCount > 1,
               let firstPage = pageViews[0],
               let lastPage = pageViews[renderedPageCount - 1] else {
@@ -1202,9 +1362,18 @@ final class LauncherPagerView: NSView {
         )
         leadingReplica.image = snapshot(of: lastPage)
         trailingReplica.image = snapshot(of: firstPage)
+        LumaEventLog.shared.writeInteraction(
+            .performance,
+            "pager.refreshEdgeReplicas",
+            fields: [
+                "pages": renderedPageCount,
+                "durationMS": Int((CACurrentMediaTime() - start) * 1_000)
+            ]
+        )
     }
 
     private func snapshot(of view: NSView) -> NSImage? {
+        let start = CACurrentMediaTime()
         guard view.bounds.width > 0,
               view.bounds.height > 0,
               let representation = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
@@ -1214,6 +1383,16 @@ final class LauncherPagerView: NSView {
         view.cacheDisplay(in: view.bounds, to: representation)
         let image = NSImage(size: view.bounds.size)
         image.addRepresentation(representation)
+        if interactionLogThrottle.shouldLog("pager.snapshot", interval: 0.20) {
+            LumaEventLog.shared.writeInteraction(
+                .performance,
+                "pager.snapshot",
+                fields: [
+                    "size": lumaLogSize(view.bounds.size),
+                    "durationMS": Int((CACurrentMediaTime() - start) * 1_000)
+                ]
+            )
+        }
         return image
     }
 
@@ -1227,10 +1406,112 @@ final class LauncherPagerView: NSView {
         return tileView
     }
 
-    /// Resolves a tile through AppKit's view hierarchy without manually scanning tile frames.
     private func hitTestTile(at point: NSPoint, from sourceView: NSView) -> LauncherTileView? {
-        let contentPoint = contentView.convert(point, from: sourceView)
-        return contentView.hitTest(contentPoint)?.enclosingLauncherTileView
+        guard let currentPage = pageViews[store.pageIndex] else {
+            LumaEventLog.shared.writeInteraction(.hitTest, "pager.tileHit.miss", fields: ["reason": "missingPage"])
+            return nil
+        }
+
+        let pagerPoint = convert(point, from: sourceView)
+        let pagePoint = NSPoint(x: pagerPoint.x, y: pagerPoint.y)
+        guard currentPage.bounds.contains(pagePoint) else {
+            if interactionLogThrottle.shouldLog("pager.tileHit.outside", interval: 0.12) {
+                LumaEventLog.shared.writeInteraction(
+                    .hitTest,
+                    "pager.tileHit.miss",
+                    fields: [
+                        "reason": "outsidePage",
+                        "pagerPoint": lumaLogPoint(pagerPoint),
+                        "pagePoint": lumaLogPoint(pagePoint)
+                    ]
+                )
+            }
+            return nil
+        }
+
+        let tileView = currentPage.subviews
+            .compactMap { $0 as? LauncherTileView }
+            .reversed()
+            .first { $0.frame.contains(pagePoint) }
+        if let tileView {
+            LumaEventLog.shared.writeInteraction(
+                .hitTest,
+                "pager.tileHit.hit",
+                fields: [
+                    "tileID": tileView.tileID,
+                    "pagePoint": lumaLogPoint(pagePoint),
+                    "pageIndex": store.pageIndex
+                ]
+            )
+        }
+        return tileView
+    }
+
+    func applyDragPreview() {
+        guard bounds.width > 0, bounds.height > 0 else { return }
+        let start = CACurrentMediaTime()
+
+        let tiles = store.visibleTiles
+        var movements: [(view: LauncherTileView, frame: NSRect)] = []
+
+        for (index, tile) in tiles.enumerated() {
+            guard let view = tileViews[tile.id] else {
+                continue
+            }
+
+            let pageIndex = index / metrics.itemsPerPage
+            guard let pageView = pageViews[pageIndex] else {
+                continue
+            }
+
+            let targetFrame = frameForTile(at: index)
+
+            if view.superview !== pageView {
+                let currentFrameInWindow = view.convert(view.bounds, to: nil)
+                pageView.addSubview(view)
+                view.frame = pageView.convert(currentFrameInWindow, from: nil)
+            }
+
+            if view.tileID == store.draggedTileID {
+                view.frame = targetFrame
+                continue
+            }
+
+            if view.frame.integral != targetFrame.integral {
+                movements.append((view, targetFrame))
+            }
+        }
+
+        guard !movements.isEmpty else {
+            return
+        }
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.11
+            context.timingFunction = CAMediaTimingFunction(
+                controlPoints: 0.18,
+                0.82,
+                0.22,
+                1.0
+            )
+
+            for movement in movements {
+                movement.view.animator().frame = movement.frame
+            }
+        }
+        LumaEventLog.shared.writeInteraction(
+            .performance,
+            "pager.applyDragPreview",
+            fields: [
+                "movements": movements.count,
+                "dragID": store.currentDragID ?? "nil",
+                "durationMS": Int((CACurrentMediaTime() - start) * 1_000)
+            ]
+        )
+    }
+
+    func debugTileView(withID tileID: String) -> LauncherTileView? {
+        tileViews[tileID]
     }
 
     /// 悬停目标变化时，只发送一次内存排序预览。
@@ -1246,6 +1527,15 @@ final class LauncherPagerView: NSView {
 
         if dropTargetID != target.tileID {
             dropTargetID = target.tileID
+            LumaEventLog.shared.writeInteraction(
+                .drag,
+                "drag.targetChanged",
+                fields: [
+                    "dragID": store.currentDragID ?? "nil",
+                    "draggedID": draggedID,
+                    "targetID": target.tileID
+                ]
+            )
             store.previewMoveTile(draggedID, before: target.tileID)
         }
     }
@@ -1262,6 +1552,17 @@ final class LauncherPagerView: NSView {
             return .move
         }
 
+        if interactionLogThrottle.shouldLog("pager.draggingUpdated", interval: 0.10) {
+            LumaEventLog.shared.writeInteraction(
+                .drag,
+                "pager.draggingUpdated",
+                fields: [
+                    "dragID": store.currentDragID ?? "nil",
+                    "draggedID": draggedID,
+                    "targetID": target.tileID
+                ]
+            )
+        }
         updateDropTarget(draggedID: draggedID, target: target)
         return .move
     }
@@ -1275,9 +1576,13 @@ final class LauncherPagerView: NSView {
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        var didCommitDrop = false
         defer {
+            currentDragCommitted = didCommitDrop
             dropTargetID = nil
-            store.endDraggingTile(commit: true)
+            store.endDraggingTile(commit: didCommitDrop)
+            setPageRasterizationEnabled(true)
+            refreshEdgeReplicas()
         }
 
         guard store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -1287,6 +1592,15 @@ final class LauncherPagerView: NSView {
             return false
         }
 
+        LumaEventLog.shared.writeInteraction(
+            .drag,
+            "pager.performDrop",
+            fields: [
+                "dragID": store.currentDragID ?? "nil",
+                "draggedID": draggedID,
+                "targetID": target.tileID
+            ]
+        )
         if let folder = target.tile.folder, draggedID.hasPrefix("app:") {
             store.addApp(draggedID, to: folder.id)
         } else if draggedID.hasPrefix("app:"), target.tile.app != nil {
@@ -1294,12 +1608,21 @@ final class LauncherPagerView: NSView {
         } else {
             updateDropTarget(draggedID: draggedID, target: target)
         }
+        didCommitDrop = true
         return true
     }
 }
 
 extension LauncherPagerView: LauncherTileViewDelegate {
     func tileView(_ view: LauncherTileView, didRequestOpen tile: LauncherTile) {
+        LumaEventLog.shared.writeInteraction(
+            .tile,
+            "tile.open.forward",
+            fields: [
+                "tileID": tile.id,
+                "kind": tile.app == nil ? "folder" : "app"
+            ]
+        )
         delegate?.pager(self, open: tile)
     }
 
@@ -1308,12 +1631,30 @@ extension LauncherPagerView: LauncherTileViewDelegate {
     }
 
     func tileViewDidBeginDragging(_ view: LauncherTileView) {
+        currentDragCommitted = false
+        setPageRasterizationEnabled(false)
+        LumaEventLog.shared.writeInteraction(.drag, "tile.drag.begin", fields: ["tileID": view.tileID])
         store.beginDraggingTile(view.tileID)
     }
 
     func tileViewDidEndDragging(_ view: LauncherTileView) {
         dropTargetID = nil
-        store.endDraggingTile(commit: false)
+        let dragID = store.currentDragID
+        if !currentDragCommitted {
+            store.endDraggingTile(commit: false)
+        }
+        LumaEventLog.shared.writeInteraction(
+            .drag,
+            "tile.drag.end",
+            fields: [
+                "tileID": view.tileID,
+                "dragID": dragID ?? "nil",
+                "committed": currentDragCommitted
+            ]
+        )
+        currentDragCommitted = false
+        setPageRasterizationEnabled(true)
+        refreshEdgeReplicas()
     }
 
     func tileView(_ view: LauncherTileView, draggingUpdatedWith draggedID: String) -> NSDragOperation {
@@ -1325,9 +1666,13 @@ extension LauncherPagerView: LauncherTileViewDelegate {
     }
 
     func tileView(_ view: LauncherTileView, performDropWith draggedID: String) -> Bool {
+        var didCommitDrop = false
         defer {
+            currentDragCommitted = didCommitDrop
             dropTargetID = nil
-            store.endDraggingTile(commit: true)
+            store.endDraggingTile(commit: didCommitDrop)
+            setPageRasterizationEnabled(true)
+            refreshEdgeReplicas()
         }
 
         guard store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -1335,6 +1680,15 @@ extension LauncherPagerView: LauncherTileViewDelegate {
             return false
         }
 
+        LumaEventLog.shared.writeInteraction(
+            .drag,
+            "tile.performDrop",
+            fields: [
+                "dragID": store.currentDragID ?? "nil",
+                "draggedID": draggedID,
+                "targetID": view.tileID
+            ]
+        )
         if let folder = view.tile.folder, draggedID.hasPrefix("app:") {
             store.addApp(draggedID, to: folder.id)
         } else if draggedID.hasPrefix("app:"), view.tile.app != nil {
@@ -1342,6 +1696,7 @@ extension LauncherPagerView: LauncherTileViewDelegate {
         } else {
             updateDropTarget(draggedID: draggedID, target: view)
         }
+        didCommitDrop = true
         return true
     }
 
@@ -1377,6 +1732,7 @@ final class LauncherTileView: NSView, NSDraggingSource {
     private var renderedTile: LauncherTile?
     private var renderedIconSize: CGFloat = 0
     private var isHiddenApp = false
+    private let interactionLogThrottle = InteractionLogThrottle()
 
     override var isFlipped: Bool { true }
 
@@ -1501,12 +1857,22 @@ final class LauncherTileView: NSView, NSDraggingSource {
         mouseDownEvent = event
         pressedTile = tile
         longPressTriggered = false
+        LumaEventLog.shared.writeInteraction(
+            .tile,
+            "tile.mouseDown",
+            fields: [
+                "tileID": tile.id,
+                "isEditing": isEditing,
+                "point": lumaLogPoint(convert(event.locationInWindow, from: nil))
+            ]
+        )
         if isEditing {
             return
         }
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.longPressTriggered = true
+            LumaEventLog.shared.writeInteraction(.tile, "tile.longPress", fields: ["tileID": self.tile.id])
             self.delegate?.tileViewDidRequestEditing(self)
         }
         longPressWorkItem = workItem
@@ -1533,6 +1899,14 @@ final class LauncherTileView: NSView, NSDraggingSource {
         longPressWorkItem?.cancel()
         longPressWorkItem = nil
         isDraggingTile = true
+        LumaEventLog.shared.writeInteraction(
+            .drag,
+            "tile.mouseDragged.beginSession",
+            fields: [
+                "tileID": tile.id,
+                "distance": String(format: "%.1f", hypot(dx, dy))
+            ]
+        )
         delegate?.tileViewDidBeginDragging(self)
 
         let pasteboardItem = NSPasteboardItem()
@@ -1553,6 +1927,14 @@ final class LauncherTileView: NSView, NSDraggingSource {
 
         guard !isDraggingTile, !longPressTriggered, !isEditing else { return }
         guard let pressedTile, pressedTile.id == tile.id else { return }
+        LumaEventLog.shared.writeInteraction(
+            .tile,
+            "tile.mouseUp.open",
+            fields: [
+                "tileID": pressedTile.id,
+                "point": lumaLogPoint(convert(event.locationInWindow, from: nil))
+            ]
+        )
         delegate?.tileView(self, didRequestOpen: pressedTile)
     }
 
@@ -1571,6 +1953,16 @@ final class LauncherTileView: NSView, NSDraggingSource {
         guard let draggedID = sender.draggingPasteboard.string(forType: .string) else {
             return []
         }
+        if interactionLogThrottle.shouldLog("tile.draggingUpdated.\(tile.id)", interval: 0.10) {
+            LumaEventLog.shared.writeInteraction(
+                .drag,
+                "tile.draggingUpdated",
+                fields: [
+                    "draggedID": draggedID,
+                    "targetID": tile.id
+                ]
+            )
+        }
         return delegate?.tileView(self, draggingUpdatedWith: draggedID) ?? []
     }
 
@@ -1582,6 +1974,14 @@ final class LauncherTileView: NSView, NSDraggingSource {
         guard let draggedID = sender.draggingPasteboard.string(forType: .string) else {
             return false
         }
+        LumaEventLog.shared.writeInteraction(
+            .drag,
+            "tile.performDragOperation",
+            fields: [
+                "draggedID": draggedID,
+                "targetID": tile.id
+            ]
+        )
         return delegate?.tileView(self, performDropWith: draggedID) ?? false
     }
 
@@ -1595,6 +1995,15 @@ final class LauncherTileView: NSView, NSDraggingSource {
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
         isDraggingTile = false
         mouseDownEvent = nil
+        LumaEventLog.shared.writeInteraction(
+            .drag,
+            "tile.draggingSessionEnded",
+            fields: [
+                "tileID": tile.id,
+                "screenPoint": lumaLogPoint(screenPoint),
+                "operation": operation.rawValue
+            ]
+        )
         delegate?.tileViewDidEndDragging(self)
         updateAppearance(animated: true)
     }
