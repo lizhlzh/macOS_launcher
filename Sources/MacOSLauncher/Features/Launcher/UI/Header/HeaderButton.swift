@@ -44,7 +44,7 @@ final class HeaderButton: NSControl {
         let titleWidth = title.isEmpty
             ? CGFloat.zero
             : ceil((title as NSString).size(withAttributes: [.font: textFont]).width)
-        return iconSize + spacing + titleWidth + 28
+        return iconSize + spacing + titleWidth + 36
     }
 
     override var isEnabled: Bool {
@@ -101,13 +101,14 @@ final class HeaderButton: NSControl {
 
         let iconSize: CGFloat = image == nil ? 0 : 18
         let spacing: CGFloat = image == nil || title.isEmpty ? 0 : 10
+        let horizontalPadding: CGFloat = title.isEmpty ? 0 : 18
         let measuredTitleWidth = title.isEmpty
             ? CGFloat.zero
             : ceil((title as NSString).size(withAttributes: [.font: textFont]).width)
-        let maxTitleWidth = max(0, bounds.width - iconSize - spacing - 14)
+        let maxTitleWidth = max(0, bounds.width - iconSize - spacing - horizontalPadding * 2)
         let titleWidth = min(measuredTitleWidth, maxTitleWidth)
         let groupWidth = iconSize + spacing + titleWidth
-        let startX = max(8, floor((bounds.width - groupWidth) / 2))
+        let startX = floor((bounds.width - groupWidth) / 2)
         let centerY = bounds.midY
 
         symbolView.isHidden = image == nil

@@ -510,6 +510,9 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         rescanButton.toolTip = store.contentState == .refreshing
             ? L10n.text(.refreshingApplications)
             : L10n.text(.rescan)
+        headerView.needsLayout = true
+        needsLayout = true
+        layoutSubtreeIfNeeded()
     }
 
     private func updateStatus() {
@@ -951,6 +954,7 @@ final class LauncherPagerView: NSView {
     private var dragPreviewScheduled = false
     private var needsDragPreviewAfterCurrentPass = false
     private var currentDragCommitted = false
+    private var layoutTransitionOverlay: NSImageView?
     private let interactionLogThrottle = InteractionLogThrottle()
 
     override var isFlipped: Bool { true }
@@ -983,6 +987,8 @@ final class LauncherPagerView: NSView {
 
     override func layout() {
         super.layout()
+        layoutTransitionOverlay?.frame = bounds
+        layoutTransitionOverlay?.layer?.position = CGPoint(x: bounds.midX, y: bounds.midY)
         guard bounds.size != lastBoundsSize else { return }
         lastBoundsSize = bounds.size
         reload(animated: false)
@@ -1084,20 +1090,77 @@ final class LauncherPagerView: NSView {
         replicaRefreshWorkItem?.cancel()
         replicaRefreshWorkItem = nil
 
+        contentView.wantsLayer = true
+        contentView.alphaValue = 1
+        contentView.layer?.removeAllAnimations()
+        contentView.layer?.transform = CATransform3DIdentity
+        layoutTransitionOverlay?.layer?.removeAllAnimations()
+        layoutTransitionOverlay?.removeFromSuperview()
+        layoutTransitionOverlay = nil
+
+        let oldSnapshot = snapshotOfPagerContent()
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+
+        if let oldSnapshot {
+            let overlay = NSImageView(frame: bounds)
+            overlay.image = oldSnapshot
+            overlay.imageScaling = .scaleAxesIndependently
+            overlay.alphaValue = 1
+            overlay.wantsLayer = true
+            overlay.layer?.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            overlay.layer?.position = CGPoint(x: bounds.midX, y: bounds.midY)
+            addSubview(overlay, positioned: .above, relativeTo: contentView)
+            layoutTransitionOverlay = overlay
+        }
+
         setPageRasterizationEnabled(false)
         performReload(animated: false, refreshReplicas: false, retargetRunningAnimations: false)
 
-        wantsLayer = true
-        layer?.removeAnimation(forKey: "layoutChangeOpacity")
+        if reduceMotion {
+            layoutTransitionOverlay?.removeFromSuperview()
+            layoutTransitionOverlay = nil
+            scheduleEdgeReplicaRefresh(after: 0.25)
+        } else {
+            let timing = CAMediaTimingFunction(controlPoints: 0.20, 0.72, 0.24, 1.0)
+            let contentStartTransform = CATransform3DMakeScale(0.985, 0.985, 1)
+            let overlayEndTransform = CATransform3DMakeScale(1.015, 1.015, 1)
 
-        let fade = CABasicAnimation(keyPath: "opacity")
-        fade.fromValue = 0.82
-        fade.toValue = 1.0
-        fade.duration = 0.14
-        fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
-        layer?.add(fade, forKey: "layoutChangeOpacity")
+            contentView.alphaValue = 0.88
 
-        scheduleEdgeReplicaRefresh(after: 0.45)
+            let contentScale = CABasicAnimation(keyPath: "transform")
+            contentScale.fromValue = NSValue(caTransform3D: contentStartTransform)
+            contentScale.toValue = NSValue(caTransform3D: CATransform3DIdentity)
+            contentScale.duration = 0.20
+            contentScale.timingFunction = timing
+            contentView.layer?.add(contentScale, forKey: "layoutChangeContentScale")
+
+            if let overlay = layoutTransitionOverlay {
+                overlay.layer?.transform = overlayEndTransform
+                let overlayScale = CABasicAnimation(keyPath: "transform")
+                overlayScale.fromValue = NSValue(caTransform3D: CATransform3DIdentity)
+                overlayScale.toValue = NSValue(caTransform3D: overlayEndTransform)
+                overlayScale.duration = 0.20
+                overlayScale.timingFunction = timing
+                overlay.layer?.add(overlayScale, forKey: "layoutChangeOverlayScale")
+            }
+
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.20
+                context.timingFunction = timing
+                self.contentView.animator().alphaValue = 1
+                self.layoutTransitionOverlay?.animator().alphaValue = 0
+            } completionHandler: { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.contentView.alphaValue = 1
+                    self.contentView.layer?.transform = CATransform3DIdentity
+                    self.layoutTransitionOverlay?.removeFromSuperview()
+                    self.layoutTransitionOverlay = nil
+                }
+            }
+
+            scheduleEdgeReplicaRefresh(after: 0.42)
+        }
 
         LumaEventLog.shared.writeInteraction(
             .performance,
@@ -1105,7 +1168,9 @@ final class LauncherPagerView: NSView {
             fields: [
                 "durationMS": Int((CACurrentMediaTime() - start) * 1_000),
                 "tiles": store.visibleTiles.count,
-                "pages": renderedPageCount
+                "pages": renderedPageCount,
+                "usedSnapshot": oldSnapshot == nil ? "false" : "true",
+                "reduceMotion": reduceMotion ? "true" : "false"
             ]
         )
     }
@@ -1589,6 +1654,19 @@ final class LauncherPagerView: NSView {
                 ]
             )
         }
+        return image
+    }
+
+    private func snapshotOfPagerContent() -> NSImage? {
+        guard bounds.width > 0,
+              bounds.height > 0,
+              let representation = bitmapImageRepForCachingDisplay(in: bounds) else {
+            return nil
+        }
+
+        cacheDisplay(in: bounds, to: representation)
+        let image = NSImage(size: bounds.size)
+        image.addRepresentation(representation)
         return image
     }
 
