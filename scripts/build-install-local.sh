@@ -10,6 +10,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="$REPO_ROOT/.build/release"
 APP_BUILD_DIR="$REPO_ROOT/build"
 APP_PATH="$APP_BUILD_DIR/$APP_NAME.app"
+ICON_SOURCE="$REPO_ROOT/Resources/AppIcon.icns"
 
 INSTALL_DIR="$HOME/Applications"
 OPEN_AFTER_INSTALL=true
@@ -52,6 +53,13 @@ mkdir -p "$APP_PATH/Contents/Resources"
 cp "$BINARY_PATH" "$APP_PATH/Contents/MacOS/$APP_NAME"
 chmod +x "$APP_PATH/Contents/MacOS/$APP_NAME"
 
+if [[ -f "$ICON_SOURCE" ]]; then
+  echo "==> Copying app icon..."
+  cp "$ICON_SOURCE" "$APP_PATH/Contents/Resources/AppIcon.icns"
+else
+  echo "Warning: App icon not found: $ICON_SOURCE"
+fi
+
 cat > "$APP_PATH/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -78,6 +86,9 @@ cat > "$APP_PATH/Contents/Info.plist" <<EOF
 
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
 
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
@@ -119,6 +130,9 @@ echo "==> Verifying signature..."
 codesign --verify --deep --strict "$INSTALL_DIR/$APP_NAME.app"
 
 echo "==> Installed: $INSTALL_DIR/$APP_NAME.app"
+echo "If Finder still shows the old icon, run:"
+echo "touch \"$INSTALL_DIR/$APP_NAME.app\""
+echo "killall Finder"
 
 if [[ "$OPEN_AFTER_INSTALL" == "true" ]]; then
   echo "==> Opening $APP_NAME..."

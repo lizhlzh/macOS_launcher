@@ -40,11 +40,12 @@ final class HeaderButton: NSControl {
 
     var preferredContentWidth: CGFloat {
         let iconSize: CGFloat = image == nil ? 0 : 18
-        let spacing: CGFloat = image == nil || title.isEmpty ? 0 : 10
+        let spacing: CGFloat = image == nil || title.isEmpty ? 0 : 9
         let titleWidth = title.isEmpty
             ? CGFloat.zero
             : ceil((title as NSString).size(withAttributes: [.font: textFont]).width)
-        return iconSize + spacing + titleWidth + 36
+        let horizontalPadding: CGFloat = title.isEmpty ? 0 : 30
+        return iconSize + spacing + titleWidth + horizontalPadding
     }
 
     override var isEnabled: Bool {
@@ -100,29 +101,41 @@ final class HeaderButton: NSControl {
         )
 
         let iconSize: CGFloat = image == nil ? 0 : 18
-        let spacing: CGFloat = image == nil || title.isEmpty ? 0 : 10
-        let horizontalPadding: CGFloat = title.isEmpty ? 0 : 18
-        let measuredTitleWidth = title.isEmpty
-            ? CGFloat.zero
-            : ceil((title as NSString).size(withAttributes: [.font: textFont]).width)
-        let maxTitleWidth = max(0, bounds.width - iconSize - spacing - horizontalPadding * 2)
-        let titleWidth = min(measuredTitleWidth, maxTitleWidth)
-        let groupWidth = iconSize + spacing + titleWidth
-        let startX = floor((bounds.width - groupWidth) / 2)
+        let spacing: CGFloat = image == nil || title.isEmpty ? 0 : 9
         let centerY = bounds.midY
 
         symbolView.isHidden = image == nil
         titleLabel.isHidden = title.isEmpty
+        if title.isEmpty {
+            if image != nil {
+                symbolView.frame = NSRect(
+                    x: floor((bounds.width - iconSize) / 2),
+                    y: floor(centerY - iconSize / 2),
+                    width: iconSize,
+                    height: iconSize
+                )
+            }
+            titleLabel.frame = .zero
+            return
+        }
+
+        let horizontalPadding: CGFloat = 15
+        let iconX = horizontalPadding
+
         if image != nil {
             symbolView.frame = NSRect(
-                x: startX,
+                x: iconX,
                 y: floor(centerY - iconSize / 2),
                 width: iconSize,
                 height: iconSize
             )
         }
+
+        let titleX = iconX + iconSize + spacing
+        let titleWidth = max(0, bounds.width - titleX - horizontalPadding)
+
         titleLabel.frame = NSRect(
-            x: startX + iconSize + spacing,
+            x: titleX,
             y: floor(centerY - 10),
             width: titleWidth,
             height: 20
