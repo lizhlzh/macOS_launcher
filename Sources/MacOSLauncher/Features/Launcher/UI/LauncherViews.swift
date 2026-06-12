@@ -1966,6 +1966,7 @@ final class LauncherTileView: NSView, NSDraggingSource {
     private var isHovering = false
     private var trackingAreaToken: NSTrackingArea?
     private var mouseDownEvent: NSEvent?
+    private var longPressTriggered = false
     private var pressedTile: LauncherTile?
     private var renderedTile: LauncherTile?
     private var renderedIconSize: CGFloat = 0
@@ -2086,6 +2087,7 @@ final class LauncherTileView: NSView, NSDraggingSource {
     override func mouseDown(with event: NSEvent) {
         mouseDownEvent = event
         pressedTile = tile
+        longPressTriggered = false
         LumaEventLog.shared.writeInteraction(
             .tile,
             "tile.mouseDown",
@@ -2110,6 +2112,7 @@ final class LauncherTileView: NSView, NSDraggingSource {
             guard event.timestamp - initialEvent.timestamp >= 0.32 else {
                 return
             }
+            longPressTriggered = true
         }
 
         isDraggingTile = true
@@ -2137,7 +2140,7 @@ final class LauncherTileView: NSView, NSDraggingSource {
             pressedTile = nil
         }
 
-        guard !isDraggingTile, !showJiggle else { return }
+        guard !isDraggingTile, !longPressTriggered, !showJiggle else { return }
         guard let pressedTile, pressedTile.id == tile.id else { return }
         LumaEventLog.shared.writeInteraction(
             .tile,

@@ -270,26 +270,10 @@ final class LauncherStore {
     }
 
     func resetGridLayout() {
-        guard gridLayout != .default else {
-            return
-        }
-
-        gridLayout = .default
-        pageIndex = 0
-        pageDragRawOffset = 0
-        pageDragOffset = 0
-        LumaEventLog.shared.writeInteraction(
-            .performance,
-            "layout.changed",
-            fields: [
-                "rows": gridLayout.rows,
-                "columns": gridLayout.columns,
-                "itemsPerPage": gridLayout.itemsPerPage,
-                "visibleTiles": visibleTiles.count
-            ]
+        setGridLayout(
+            rows: LauncherGridLayout.default.rows,
+            columns: LauncherGridLayout.default.columns
         )
-        savePreferences()
-        onChange?(.layoutChanged)
     }
 
     /// 修改参与派生 Tile 计算的隐藏状态筛选范围。
