@@ -38,6 +38,15 @@ final class HeaderButton: NSControl {
         }
     }
 
+    var preferredContentWidth: CGFloat {
+        let iconSize: CGFloat = image == nil ? 0 : 18
+        let spacing: CGFloat = image == nil || title.isEmpty ? 0 : 10
+        let titleWidth = title.isEmpty
+            ? CGFloat.zero
+            : ceil((title as NSString).size(withAttributes: [.font: textFont]).width)
+        return iconSize + spacing + titleWidth + 28
+    }
+
     override var isEnabled: Bool {
         didSet {
             updateForegroundColor()

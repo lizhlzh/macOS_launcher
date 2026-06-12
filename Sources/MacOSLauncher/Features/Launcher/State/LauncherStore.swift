@@ -8,6 +8,7 @@ enum LauncherStoreChange {
     case content(animated: Bool)
     case state
     case search
+    case layoutChanged
     case filterModeChanged(previousPageIndex: Int)
     case folderCreated(folderID: String, previousPageIndex: Int, targetPageIndex: Int)
     case pageDrag
@@ -125,6 +126,10 @@ final class LauncherStore {
         dragPreviewChanged
     }
 
+    var shouldShowJiggle: Bool {
+        reorderSessionKind == .manualEdit
+    }
+
     // MARK: - 生命周期输入
 
     /// 应用已持久化的用户配置，不触发磁盘读写。
@@ -233,10 +238,27 @@ final class LauncherStore {
     ///   - rows: 每页行数。
     ///   - columns: 每页列数。
     func setGridLayout(rows: Int, columns: Int) {
-        gridLayout = LauncherGridLayout(rows: rows, columns: columns)
+        let newLayout = LauncherGridLayout(rows: rows, columns: columns)
+        guard gridLayout != newLayout else {
+            return
+        }
+
+        gridLayout = newLayout
         pageIndex = 0
+        pageDragRawOffset = 0
+        pageDragOffset = 0
+        LumaEventLog.shared.writeInteraction(
+            .performance,
+            "layout.changed",
+            fields: [
+                "rows": gridLayout.rows,
+                "columns": gridLayout.columns,
+                "itemsPerPage": gridLayout.itemsPerPage,
+                "visibleTiles": visibleTiles.count
+            ]
+        )
         savePreferences()
-        onChange?(.content(animated: true))
+        onChange?(.layoutChanged)
     }
 
     func setGridRows(_ rows: Int) {
@@ -248,10 +270,26 @@ final class LauncherStore {
     }
 
     func resetGridLayout() {
+        guard gridLayout != .default else {
+            return
+        }
+
         gridLayout = .default
         pageIndex = 0
+        pageDragRawOffset = 0
+        pageDragOffset = 0
+        LumaEventLog.shared.writeInteraction(
+            .performance,
+            "layout.changed",
+            fields: [
+                "rows": gridLayout.rows,
+                "columns": gridLayout.columns,
+                "itemsPerPage": gridLayout.itemsPerPage,
+                "visibleTiles": visibleTiles.count
+            ]
+        )
         savePreferences()
-        onChange?(.content(animated: true))
+        onChange?(.layoutChanged)
     }
 
     /// 修改参与派生 Tile 计算的隐藏状态筛选范围。
@@ -498,20 +536,11 @@ final class LauncherStore {
     }
 
     func beginEditing() {
-        isEditing = true
-        onChange?(.editing)
+        beginManualEditing()
     }
 
     func endEditing() {
-        draggedTileID = nil
-        isEditing = false
-        if reorderSessionKind != .manualEdit {
-            reorderSessionKind = .none
-        }
-        activeDragCommitPolicy = .autoCommit
-        tileOrderBeforeDrag = nil
-        dragPreviewChanged = false
-        onChange?(.editing)
+        cancelManualEditing()
     }
 
     func beginManualEditing() {

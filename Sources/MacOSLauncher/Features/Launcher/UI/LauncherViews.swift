@@ -76,7 +76,8 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         tintView.frame = bounds
 
         let top = safeTopPadding()
-        let headerWidth = min(max(960, bounds.width - 260), 1450)
+        let minimumHeaderWidth: CGFloat = L10n.isChinese ? 1120 : 1040
+        let headerWidth = min(max(minimumHeaderWidth, bounds.width - 220), 1450)
         headerView.frame = NSRect(
             x: floor((bounds.width - headerWidth) / 2),
             y: top,
@@ -85,15 +86,17 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         )
 
         let buttonHeight: CGFloat = 50
+        let sortWidth = max(L10n.isChinese ? 148 : 132, sortButton.preferredContentWidth)
+        let layoutWidth = max(108, layoutButton.preferredContentWidth)
         let controlWidths: [CGFloat] = [
-            L10n.isChinese ? 116 : 132,
-            104,
+            sortWidth,
+            layoutWidth,
             58, 58, 58, 58, 58
         ]
         let controlSpacing: CGFloat = 7
         let controlsWidth = controlWidths.reduce(0, +)
             + CGFloat(controlWidths.count - 1) * controlSpacing
-        let searchAreaWidth = max(320, headerWidth - controlsWidth - 54)
+        let searchAreaWidth = max(260, headerWidth - controlsWidth - 54)
         let searchCenterY = headerView.bounds.midY
         searchField.frame = NSRect(
             x: 18,
@@ -433,6 +436,11 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         case .search:
             pager.reloadSearchResults()
             updatePageDots()
+        case .layoutChanged:
+            pager.reloadForLayoutChange()
+            updatePageDots()
+            updateHeader()
+            updateStatus()
         case let .filterModeChanged(previousPageIndex):
             pager.reloadForFilterModeChange(from: previousPageIndex, to: 0)
             updatePageDots()
@@ -494,10 +502,10 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         )?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .semibold))
         filterButton.toolTip = store.appFilterMode.title
         editButton.image = NSImage(
-            systemSymbolName: store.isEditing ? "checkmark" : "slider.horizontal.3",
+            systemSymbolName: store.isInManualEditMode ? "checkmark" : "slider.horizontal.3",
             accessibilityDescription: nil
         )
-        editButton.toolTip = store.isEditing ? L10n.text(.doneEditingTooltip) : L10n.text(.editTooltip)
+        editButton.toolTip = store.isInManualEditMode ? L10n.text(.doneEditingTooltip) : L10n.text(.editTooltip)
         rescanButton.isEnabled = store.contentState != .refreshing
         rescanButton.toolTip = store.contentState == .refreshing
             ? L10n.text(.refreshingApplications)
@@ -616,7 +624,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         let menu = NSMenu()
         menu.addItem(menuItem(L10n.text(.sortCustom), action: #selector(setCustomSort), state: store.sortMode == .custom))
         menu.addItem(menuItem(L10n.text(.sortName), action: #selector(setNameSort), state: store.sortMode == .name))
-        popUpHeaderMenu(menu, from: sortButton)
+        popUpHeaderMenu(menu, from: sortButton, minimumWidth: 180)
     }
 
     @objc private func showLayoutMenu() {
@@ -654,7 +662,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         let reset = NSMenuItem(title: L10n.text(.layoutDefault), action: #selector(resetLayout), keyEquivalent: "")
         reset.target = self
         menu.addItem(reset)
-        popUpHeaderMenu(menu, from: layoutButton)
+        popUpHeaderMenu(menu, from: layoutButton, minimumWidth: 240)
     }
 
     @objc private func showFilterMenu() {
@@ -663,13 +671,26 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         menu.addItem(menuItem(L10n.text(.filterVisible), action: #selector(showVisibleAppsOnly), state: store.appFilterMode == .visibleOnly))
         menu.addItem(menuItem(L10n.text(.filterAll), action: #selector(showAllApps), state: store.appFilterMode == .all))
         menu.addItem(menuItem(L10n.text(.filterHidden), action: #selector(showHiddenAppsOnly), state: store.appFilterMode == .hiddenOnly))
-        popUpHeaderMenu(menu, from: filterButton)
+        popUpHeaderMenu(menu, from: filterButton, minimumWidth: 220)
     }
 
-    private func popUpHeaderMenu(_ menu: NSMenu, from button: NSView) {
-        let anchor = NSPoint(
-            x: floor(button.bounds.midX),
-            y: button.bounds.maxY + 6
+    private func popUpHeaderMenu(
+        _ menu: NSMenu,
+        from button: HeaderButton,
+        minimumWidth: CGFloat = 220
+    ) {
+        menu.minimumWidth = minimumWidth
+        let anchor = NSPoint(x: 0, y: -6)
+        LumaEventLog.shared.writeInteraction(
+            .header,
+            "header.menu.popup",
+            fields: [
+                "button": button.debugName,
+                "buttonFrame": lumaLogRect(button.frame),
+                "buttonBounds": lumaLogRect(button.bounds),
+                "anchor": lumaLogPoint(anchor),
+                "minimumWidth": minimumWidth
+            ]
         )
         menu.popUp(positioning: nil, at: anchor, in: button)
     }
@@ -846,7 +867,7 @@ extension LauncherRootView: LauncherPagerDelegate {
     }
 
     func pagerDidRequestEditing(_ pager: LauncherPagerView) {
-        store.beginEditing()
+        store.beginManualEditing()
     }
 
     func pager(_ pager: LauncherPagerView, contextMenuFor tile: LauncherTile) -> NSMenu {
@@ -1057,6 +1078,38 @@ final class LauncherPagerView: NSView {
         performReload(animated: false, refreshReplicas: true, retargetRunningAnimations: false)
     }
 
+    func reloadForLayoutChange() {
+        let start = CACurrentMediaTime()
+
+        replicaRefreshWorkItem?.cancel()
+        replicaRefreshWorkItem = nil
+
+        setPageRasterizationEnabled(false)
+        performReload(animated: false, refreshReplicas: false, retargetRunningAnimations: false)
+
+        wantsLayer = true
+        layer?.removeAnimation(forKey: "layoutChangeOpacity")
+
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0.82
+        fade.toValue = 1.0
+        fade.duration = 0.14
+        fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        layer?.add(fade, forKey: "layoutChangeOpacity")
+
+        scheduleEdgeReplicaRefresh(after: 0.45)
+
+        LumaEventLog.shared.writeInteraction(
+            .performance,
+            "pager.reloadForLayoutChange",
+            fields: [
+                "durationMS": Int((CACurrentMediaTime() - start) * 1_000),
+                "tiles": store.visibleTiles.count,
+                "pages": renderedPageCount
+            ]
+        )
+    }
+
     func reloadForFilterModeChange(from previousPageIndex: Int, to targetPageIndex: Int) {
         replicaRefreshWorkItem?.cancel()
         replicaRefreshWorkItem = nil
@@ -1140,8 +1193,11 @@ final class LauncherPagerView: NSView {
     }
 
     private func scheduleEdgeReplicaRefresh(after delay: TimeInterval) {
+        replicaRefreshWorkItem?.cancel()
+
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
+            self.setPageRasterizationEnabled(true)
             self.refreshEdgeReplicas()
             self.replicaRefreshWorkItem = nil
         }
@@ -1269,7 +1325,7 @@ final class LauncherPagerView: NSView {
             if let existing = tileViews[tile.id] {
                 view = existing
                 isNew = !view.isDescendant(of: contentView)
-                view.update(tile: tile, metrics: metrics, isEditing: store.isEditing)
+                view.update(tile: tile, metrics: metrics, showJiggle: store.shouldShowJiggle)
                 if isNew {
                     view.alphaValue = animated ? 0 : 1
                 }
@@ -1278,7 +1334,7 @@ final class LauncherPagerView: NSView {
                     tile: tile,
                     store: store,
                     metrics: metrics,
-                    isEditing: store.isEditing
+                    showJiggle: store.shouldShowJiggle
                 )
                 view.delegate = self
                 view.alphaValue = animated ? 0 : 1
@@ -1373,7 +1429,7 @@ final class LauncherPagerView: NSView {
 
     func updateEditingState() {
         for view in tileViews.values {
-            view.setEditing(store.isEditing, dragged: store.draggedTileID == view.tileID)
+            view.setEditing(store.shouldShowJiggle, dragged: store.draggedTileID == view.tileID)
         }
     }
 
@@ -1904,15 +1960,12 @@ final class LauncherTileView: NSView, NSDraggingSource {
     private let store: LauncherStore
     private let iconView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
-    private let editBadge = NSImageView()
     private var metrics: LauncherGridMetrics
-    private var isEditing = false
+    private var showJiggle = false
     private var isDraggingTile = false
     private var isHovering = false
     private var trackingAreaToken: NSTrackingArea?
     private var mouseDownEvent: NSEvent?
-    private var longPressWorkItem: DispatchWorkItem?
-    private var longPressTriggered = false
     private var pressedTile: LauncherTile?
     private var renderedTile: LauncherTile?
     private var renderedIconSize: CGFloat = 0
@@ -1922,23 +1975,27 @@ final class LauncherTileView: NSView, NSDraggingSource {
 
     override var isFlipped: Bool { true }
 
+    private var shouldReduceMotion: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    }
+
     /// 创建 Tile 视图。
     ///
     /// - Parameters:
     ///   - tile: 当前展示的应用或文件夹模型。
     ///   - store: 提供图标和隐藏状态的业务 Store。
     ///   - metrics: 当前网格布局计算结果。
-    ///   - isEditing: 创建时是否处于编辑模式。
+    ///   - showJiggle: 创建时是否处于手动整理抖动状态。
     init(
         tile: LauncherTile,
         store: LauncherStore,
         metrics: LauncherGridMetrics,
-        isEditing: Bool
+        showJiggle: Bool
     ) {
         self.tile = tile
         self.store = store
         self.metrics = metrics
-        self.isEditing = isEditing
+        self.showJiggle = showJiggle
         super.init(frame: .zero)
 
         wantsLayer = true
@@ -1969,16 +2026,8 @@ final class LauncherTileView: NSView, NSDraggingSource {
         titleLabel.layer?.shadowOffset = CGSize(width: 0, height: -1)
         addSubview(titleLabel)
 
-        editBadge.image = NSImage(systemSymbolName: "line.3.horizontal", accessibilityDescription: "Drag")
-        editBadge.contentTintColor = .white.withAlphaComponent(0.82)
-        editBadge.wantsLayer = true
-        editBadge.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.30).cgColor
-        editBadge.layer?.cornerRadius = 13
-        editBadge.isHidden = true
-        addSubview(editBadge)
-
         registerForDraggedTypes([.string])
-        update(tile: tile, metrics: metrics, isEditing: isEditing)
+        update(tile: tile, metrics: metrics, showJiggle: showJiggle)
     }
 
     @available(*, unavailable)
@@ -2003,12 +2052,6 @@ final class LauncherTileView: NSView, NSDraggingSource {
             y: iconView.frame.maxY + metrics.iconTitleSpacing,
             width: bounds.width - 4,
             height: metrics.titleHeight
-        )
-        editBadge.frame = NSRect(
-            x: iconView.frame.maxX - 20,
-            y: max(0, iconView.frame.minY - 5),
-            width: 26,
-            height: 26
         )
     }
 
@@ -2043,27 +2086,15 @@ final class LauncherTileView: NSView, NSDraggingSource {
     override func mouseDown(with event: NSEvent) {
         mouseDownEvent = event
         pressedTile = tile
-        longPressTriggered = false
         LumaEventLog.shared.writeInteraction(
             .tile,
             "tile.mouseDown",
             fields: [
                 "tileID": tile.id,
-                "isEditing": isEditing,
+                "showJiggle": showJiggle,
                 "point": lumaLogPoint(convert(event.locationInWindow, from: nil))
             ]
         )
-        if isEditing {
-            return
-        }
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.longPressTriggered = true
-            LumaEventLog.shared.writeInteraction(.tile, "tile.longPress", fields: ["tileID": self.tile.id])
-            self.delegate?.tileViewDidRequestEditing(self)
-        }
-        longPressWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.42, execute: workItem)
     }
 
     /// 达到移动距离和长按阈值后启动原生拖拽。
@@ -2075,16 +2106,12 @@ final class LauncherTileView: NSView, NSDraggingSource {
         let dy = event.locationInWindow.y - initialEvent.locationInWindow.y
         guard hypot(dx, dy) > 4 else { return }
 
-        if !isEditing, !longPressTriggered {
+        if !showJiggle {
             guard event.timestamp - initialEvent.timestamp >= 0.32 else {
                 return
             }
-            longPressTriggered = true
-            delegate?.tileViewDidRequestEditing(self)
         }
 
-        longPressWorkItem?.cancel()
-        longPressWorkItem = nil
         isDraggingTile = true
         LumaEventLog.shared.writeInteraction(
             .drag,
@@ -2105,14 +2132,12 @@ final class LauncherTileView: NSView, NSDraggingSource {
     }
 
     override func mouseUp(with event: NSEvent) {
-        longPressWorkItem?.cancel()
-        longPressWorkItem = nil
         defer {
             mouseDownEvent = nil
             pressedTile = nil
         }
 
-        guard !isDraggingTile, !longPressTriggered, !isEditing else { return }
+        guard !isDraggingTile, !showJiggle else { return }
         guard let pressedTile, pressedTile.id == tile.id else { return }
         LumaEventLog.shared.writeInteraction(
             .tile,
@@ -2200,8 +2225,8 @@ final class LauncherTileView: NSView, NSDraggingSource {
     /// - Parameters:
     ///   - tile: 最新 Tile 模型。
     ///   - metrics: 最新网格布局计算结果。
-    ///   - isEditing: 当前是否处于编辑模式。
-    func update(tile: LauncherTile, metrics: LauncherGridMetrics, isEditing: Bool) {
+    ///   - showJiggle: 当前是否显示手动整理抖动。
+    func update(tile: LauncherTile, metrics: LauncherGridMetrics, showJiggle: Bool) {
         let wasUnrendered = renderedTile == nil
         let tileChanged = renderedTile != tile
         let iconSizeChanged = abs(renderedIconSize - metrics.iconSize) > 0.5
@@ -2216,7 +2241,7 @@ final class LauncherTileView: NSView, NSDraggingSource {
             || abs(self.metrics.tileWidth - metrics.tileWidth) > 0.5
             || abs(self.metrics.tileHeight - metrics.tileHeight) > 0.5
             || abs(self.metrics.titleHeight - metrics.titleHeight) > 0.5
-        let editingChanged = self.isEditing != isEditing
+        let jiggleChanged = self.showJiggle != showJiggle
         let hiddenState = tile.app.map { store.isAppHidden($0.id) } ?? false
 
         self.tile = tile
@@ -2227,7 +2252,7 @@ final class LauncherTileView: NSView, NSDraggingSource {
             setAccessibilityHelp("Application. Press to launch.")
         }
         self.metrics = metrics
-        self.isEditing = isEditing
+        self.showJiggle = showJiggle
         isHiddenApp = hiddenState
         if titleLabel.stringValue != tile.title {
             titleLabel.stringValue = tile.title
@@ -2238,8 +2263,7 @@ final class LauncherTileView: NSView, NSDraggingSource {
         renderedTile = tile
         renderedIconSize = metrics.iconSize
 
-        if editingChanged || editBadge.isHidden == isEditing {
-            editBadge.isHidden = true
+        if jiggleChanged {
             updateJiggleAnimation()
         }
         if metricsChanged {
@@ -2250,10 +2274,9 @@ final class LauncherTileView: NSView, NSDraggingSource {
         }
     }
 
-    func setEditing(_ editing: Bool, dragged: Bool) {
-        isEditing = editing
+    func setEditing(_ showJiggle: Bool, dragged: Bool) {
+        self.showJiggle = showJiggle
         isDraggingTile = dragged
-        editBadge.isHidden = true
         updateJiggleAnimation()
         updateAppearance(animated: true)
     }
@@ -2316,7 +2339,12 @@ final class LauncherTileView: NSView, NSDraggingSource {
     }
 
     private func updateJiggleAnimation() {
-        if isEditing, !isDraggingTile {
+        guard !shouldReduceMotion else {
+            removeJiggleAnimation()
+            return
+        }
+
+        if showJiggle, !isDraggingTile {
             applyJiggleAnimationIfNeeded()
         } else {
             removeJiggleAnimation()
