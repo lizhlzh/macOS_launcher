@@ -954,7 +954,6 @@ final class LauncherPagerView: NSView {
     private var dragPreviewScheduled = false
     private var needsDragPreviewAfterCurrentPass = false
     private var currentDragCommitted = false
-    private var layoutTransitionOverlay: NSImageView?
     private let interactionLogThrottle = InteractionLogThrottle()
 
     override var isFlipped: Bool { true }
@@ -987,8 +986,6 @@ final class LauncherPagerView: NSView {
 
     override func layout() {
         super.layout()
-        layoutTransitionOverlay?.frame = bounds
-        layoutTransitionOverlay?.layer?.position = CGPoint(x: bounds.midX, y: bounds.midY)
         guard bounds.size != lastBoundsSize else { return }
         lastBoundsSize = bounds.size
         reload(animated: false)
@@ -1092,74 +1089,33 @@ final class LauncherPagerView: NSView {
 
         contentView.wantsLayer = true
         contentView.alphaValue = 1
-        contentView.layer?.removeAllAnimations()
+        contentView.layer?.removeAnimation(forKey: "layoutTransition")
+        contentView.layer?.removeAnimation(forKey: "layoutChangeScale")
         contentView.layer?.transform = CATransform3DIdentity
-        layoutTransitionOverlay?.layer?.removeAllAnimations()
-        layoutTransitionOverlay?.removeFromSuperview()
-        layoutTransitionOverlay = nil
-
-        let oldSnapshot = snapshotOfPagerContent()
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
 
-        if let oldSnapshot {
-            let overlay = NSImageView(frame: bounds)
-            overlay.image = oldSnapshot
-            overlay.imageScaling = .scaleAxesIndependently
-            overlay.alphaValue = 1
-            overlay.wantsLayer = true
-            overlay.layer?.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-            overlay.layer?.position = CGPoint(x: bounds.midX, y: bounds.midY)
-            addSubview(overlay, positioned: .above, relativeTo: contentView)
-            layoutTransitionOverlay = overlay
+        setPageRasterizationEnabled(false)
+        if !reduceMotion {
+            let transition = CATransition()
+            transition.type = .fade
+            transition.duration = 0.22
+            transition.timingFunction = CAMediaTimingFunction(controlPoints: 0.18, 0.78, 0.22, 1.0)
+            contentView.layer?.add(transition, forKey: "layoutTransition")
         }
 
-        setPageRasterizationEnabled(false)
         performReload(animated: false, refreshReplicas: false, retargetRunningAnimations: false)
 
-        if reduceMotion {
-            layoutTransitionOverlay?.removeFromSuperview()
-            layoutTransitionOverlay = nil
-            scheduleEdgeReplicaRefresh(after: 0.25)
-        } else {
-            let timing = CAMediaTimingFunction(controlPoints: 0.20, 0.72, 0.24, 1.0)
-            let contentStartTransform = CATransform3DMakeScale(0.985, 0.985, 1)
-            let overlayEndTransform = CATransform3DMakeScale(1.015, 1.015, 1)
-
-            contentView.alphaValue = 0.88
-
-            let contentScale = CABasicAnimation(keyPath: "transform")
-            contentScale.fromValue = NSValue(caTransform3D: contentStartTransform)
-            contentScale.toValue = NSValue(caTransform3D: CATransform3DIdentity)
-            contentScale.duration = 0.20
-            contentScale.timingFunction = timing
-            contentView.layer?.add(contentScale, forKey: "layoutChangeContentScale")
-
-            if let overlay = layoutTransitionOverlay {
-                overlay.layer?.transform = overlayEndTransform
-                let overlayScale = CABasicAnimation(keyPath: "transform")
-                overlayScale.fromValue = NSValue(caTransform3D: CATransform3DIdentity)
-                overlayScale.toValue = NSValue(caTransform3D: overlayEndTransform)
-                overlayScale.duration = 0.20
-                overlayScale.timingFunction = timing
-                overlay.layer?.add(overlayScale, forKey: "layoutChangeOverlayScale")
-            }
-
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.20
-                context.timingFunction = timing
-                self.contentView.animator().alphaValue = 1
-                self.layoutTransitionOverlay?.animator().alphaValue = 0
-            } completionHandler: { [weak self] in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    self.contentView.alphaValue = 1
-                    self.contentView.layer?.transform = CATransform3DIdentity
-                    self.layoutTransitionOverlay?.removeFromSuperview()
-                    self.layoutTransitionOverlay = nil
-                }
-            }
-
+        if !reduceMotion, let layer = contentView.layer {
+            let scale = CABasicAnimation(keyPath: "transform")
+            scale.fromValue = NSValue(caTransform3D: CATransform3DMakeScale(0.975, 0.975, 1))
+            scale.toValue = NSValue(caTransform3D: CATransform3DIdentity)
+            scale.duration = 0.22
+            scale.timingFunction = CAMediaTimingFunction(controlPoints: 0.18, 0.78, 0.22, 1.0)
+            layer.transform = CATransform3DIdentity
+            layer.add(scale, forKey: "layoutChangeScale")
             scheduleEdgeReplicaRefresh(after: 0.42)
+        } else {
+            scheduleEdgeReplicaRefresh(after: 0.25)
         }
 
         LumaEventLog.shared.writeInteraction(
@@ -1169,7 +1125,6 @@ final class LauncherPagerView: NSView {
                 "durationMS": Int((CACurrentMediaTime() - start) * 1_000),
                 "tiles": store.visibleTiles.count,
                 "pages": renderedPageCount,
-                "usedSnapshot": oldSnapshot == nil ? "false" : "true",
                 "reduceMotion": reduceMotion ? "true" : "false"
             ]
         )
@@ -1657,19 +1612,6 @@ final class LauncherPagerView: NSView {
         return image
     }
 
-    private func snapshotOfPagerContent() -> NSImage? {
-        guard bounds.width > 0,
-              bounds.height > 0,
-              let representation = bitmapImageRepForCachingDisplay(in: bounds) else {
-            return nil
-        }
-
-        cacheDisplay(in: bounds, to: representation)
-        let image = NSImage(size: bounds.size)
-        image.addRepresentation(representation)
-        return image
-    }
-
     private func tile(atDraggingLocation location: NSPoint) -> LauncherTileView? {
         let rawLocalPoint = convert(location, from: nil)
         let flippedLocalPoint = NSPoint(
@@ -1946,10 +1888,10 @@ extension LauncherPagerView: LauncherTileViewDelegate {
     func tileViewDidEndDragging(_ view: LauncherTileView, operation: NSDragOperation) {
         dropTargetID = nil
         let dragID = store.currentDragID
+        let hasPendingDragPreview = store.hasPendingDragPreview
         let shouldCommit =
             currentDragCommitted
-            || (operation.contains(.move) && store.hasPendingDragPreview)
-        store.endDraggingTile(commit: shouldCommit)
+            || hasPendingDragPreview
         LumaEventLog.shared.writeInteraction(
             .drag,
             "tile.drag.end",
@@ -1957,9 +1899,12 @@ extension LauncherPagerView: LauncherTileViewDelegate {
                 "tileID": view.tileID,
                 "dragID": dragID ?? "nil",
                 "committed": shouldCommit,
-                "operation": operation.rawValue
+                "operation": operation.rawValue,
+                "currentDragCommitted": currentDragCommitted,
+                "hasPendingDragPreview": hasPendingDragPreview
             ]
         )
+        store.endDraggingTile(commit: shouldCommit)
         currentDragCommitted = false
         setPageRasterizationEnabled(true)
         refreshEdgeReplicas()
@@ -2014,6 +1959,9 @@ extension LauncherPagerView: LauncherTileViewDelegate {
     ) -> Bool {
         guard draggedID.hasPrefix("app:"),
               target.tile.app != nil else {
+            return false
+        }
+        guard NSApp.currentEvent?.modifierFlags.contains(.option) == true else {
             return false
         }
         return target.wantsCreateFolderDrop(atWindowLocation: windowLocation)
@@ -2207,8 +2155,10 @@ final class LauncherTileView: NSView, NSDraggingSource {
         let pasteboardItem = NSPasteboardItem()
         pasteboardItem.setString(tile.id, forType: .string)
         let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
-        draggingItem.setDraggingFrame(iconView.frame, contents: iconView.image)
-        beginDraggingSession(with: [draggingItem], event: event, source: self)
+        let previewImage = dragPreviewImage() ?? iconView.image
+        draggingItem.setDraggingFrame(iconView.frame, contents: previewImage)
+        let session = beginDraggingSession(with: [draggingItem], event: event, source: self)
+        session.animatesToStartingPositionsOnCancelOrFail = false
         updateAppearance(animated: true)
     }
 
@@ -2383,6 +2333,21 @@ final class LauncherTileView: NSView, NSDraggingSource {
                 size: metrics.iconSize
             )
         }
+    }
+
+    private func dragPreviewImage() -> NSImage? {
+        let sourceBounds = iconView.bounds
+        guard sourceBounds.width > 0,
+              sourceBounds.height > 0,
+              let representation = iconView.bitmapImageRepForCachingDisplay(in: sourceBounds) else {
+            return iconView.image
+        }
+
+        iconView.cacheDisplay(in: sourceBounds, to: representation)
+
+        let image = NSImage(size: sourceBounds.size)
+        image.addRepresentation(representation)
+        return image
     }
 
     /// 应用 Hover、隐藏和拖拽视觉状态，不修改 Tile 业务数据。

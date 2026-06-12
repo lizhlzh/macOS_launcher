@@ -689,12 +689,14 @@ final class LauncherStore {
     ///   - app: 目标应用。
     ///   - size: 期望图标尺寸；当前缓存按应用复用该图标。
     /// - Returns: 应用图标。
-    func appIcon(for app: LauncherAppInfo, size _: CGFloat = 96) -> NSImage {
+    func appIcon(for app: LauncherAppInfo, size: CGFloat = 96) -> NSImage {
         if let cached = iconCache[app.id] {
+            cached.size = NSSize(width: size, height: size)
             return cached
         }
 
         let icon = NSWorkspace.shared.icon(forFile: app.path)
+        icon.size = NSSize(width: size, height: size)
         iconCache[app.id] = icon
         return icon
     }
