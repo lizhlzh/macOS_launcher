@@ -143,7 +143,7 @@ func rootViewRoutesHeaderCoordinatesToHeaderButton() throws {
         y: headerY + 33
     )
 
-    let hitView = try #require(rootView.hitTest(sortCenter))
+    let hitView = try #require(rootView.hitTest(rawPoint(fromLayoutPoint: sortCenter, in: rootView)))
     #expect(hitView is HeaderButton)
     #expect(hitView.accessibilityLabel() == "Sort")
 }
@@ -196,33 +196,57 @@ func pagerHitTestingResolvesExactTileAcrossRowsAndPages() throws {
         layout: store.gridLayout
     )
 
-    let firstRowPoint = tileIconCenter(indexOnPage: 2, metrics: metrics, pager: pager)
-    let firstRowTile = try #require(pager.hitTest(firstRowPoint) as? LauncherTileView)
+    let firstRowPoint = rootRawPointForPagerPoint(
+        tileIconCenter(indexOnPage: 2, metrics: metrics, pager: pager),
+        pager: pager,
+        rootView: rootView
+    )
+    let firstRowTile = try #require(rootView.hitTest(firstRowPoint) as? LauncherTileView)
     #expect(firstRowTile.tileID == "app:test.2")
 
     let secondRowIndex = store.gridLayout.columns + 1
-    let secondRowPoint = tileIconCenter(indexOnPage: secondRowIndex, metrics: metrics, pager: pager)
-    let secondRowTile = try #require(pager.hitTest(secondRowPoint) as? LauncherTileView)
+    let secondRowPoint = rootRawPointForPagerPoint(
+        tileIconCenter(indexOnPage: secondRowIndex, metrics: metrics, pager: pager),
+        pager: pager,
+        rootView: rootView
+    )
+    let secondRowTile = try #require(rootView.hitTest(secondRowPoint) as? LauncherTileView)
     #expect(secondRowTile.tileID == "app:test.\(secondRowIndex)")
 
     let thirdRowIndex = store.gridLayout.columns * 2 + 3
-    let thirdRowPoint = tileIconCenter(indexOnPage: thirdRowIndex, metrics: metrics, pager: pager)
-    let thirdRowTile = try #require(pager.hitTest(thirdRowPoint) as? LauncherTileView)
+    let thirdRowPoint = rootRawPointForPagerPoint(
+        tileIconCenter(indexOnPage: thirdRowIndex, metrics: metrics, pager: pager),
+        pager: pager,
+        rootView: rootView
+    )
+    let thirdRowTile = try #require(rootView.hitTest(thirdRowPoint) as? LauncherTileView)
     #expect(thirdRowTile.tileID == "app:test.\(thirdRowIndex)")
 
     let lowerRowIndex = store.gridLayout.columns * 3 + 4
-    let lowerRowPoint = tileIconCenter(indexOnPage: lowerRowIndex, metrics: metrics, pager: pager)
-    let lowerRowTile = try #require(pager.hitTest(lowerRowPoint) as? LauncherTileView)
+    let lowerRowPoint = rootRawPointForPagerPoint(
+        tileIconCenter(indexOnPage: lowerRowIndex, metrics: metrics, pager: pager),
+        pager: pager,
+        rootView: rootView
+    )
+    let lowerRowTile = try #require(rootView.hitTest(lowerRowPoint) as? LauncherTileView)
     #expect(lowerRowTile.tileID == "app:test.\(lowerRowIndex)")
 
-    let titlePoint = tileTitleCenter(indexOnPage: lowerRowIndex, metrics: metrics, pager: pager)
-    let titleTile = try #require(pager.hitTest(titlePoint) as? LauncherTileView)
+    let titlePoint = rootRawPointForPagerPoint(
+        tileTitleCenter(indexOnPage: lowerRowIndex, metrics: metrics, pager: pager),
+        pager: pager,
+        rootView: rootView
+    )
+    let titleTile = try #require(rootView.hitTest(titlePoint) as? LauncherTileView)
     #expect(titleTile.tileID == "app:test.\(lowerRowIndex)")
 
     store.changePage(by: 1)
     pager.setPage(index: store.pageIndex, dragOffset: 0, animated: false)
-    let secondPagePoint = tileIconCenter(indexOnPage: 1, metrics: metrics, pager: pager)
-    let secondPageTile = try #require(pager.hitTest(secondPagePoint) as? LauncherTileView)
+    let secondPagePoint = rootRawPointForPagerPoint(
+        tileIconCenter(indexOnPage: 1, metrics: metrics, pager: pager),
+        pager: pager,
+        rootView: rootView
+    )
+    let secondPageTile = try #require(rootView.hitTest(secondPagePoint) as? LauncherTileView)
     #expect(secondPageTile.tileID == "app:test.\(store.gridLayout.itemsPerPage + 1)")
 
     store.setGridLayout(rows: 4, columns: 5)
@@ -232,8 +256,12 @@ func pagerHitTestingResolvesExactTileAcrossRowsAndPages() throws {
         size: NSSize(width: pager.bounds.width - 96, height: pager.bounds.height),
         layout: store.gridLayout
     )
-    let compactPoint = tileIconCenter(indexOnPage: 6, metrics: compactMetrics, pager: pager)
-    let compactTile = try #require(pager.hitTest(compactPoint) as? LauncherTileView)
+    let compactPoint = rootRawPointForPagerPoint(
+        tileIconCenter(indexOnPage: 6, metrics: compactMetrics, pager: pager),
+        pager: pager,
+        rootView: rootView
+    )
+    let compactTile = try #require(rootView.hitTest(compactPoint) as? LauncherTileView)
     #expect(compactTile.tileID == "app:test.6")
 
     store.setSearchText("Test 12")
@@ -243,8 +271,12 @@ func pagerHitTestingResolvesExactTileAcrossRowsAndPages() throws {
         size: NSSize(width: pager.bounds.width - 96, height: pager.bounds.height),
         layout: store.gridLayout
     )
-    let searchPoint = tileIconCenter(indexOnPage: 0, metrics: searchMetrics, pager: pager)
-    let searchTile = try #require(pager.hitTest(searchPoint) as? LauncherTileView)
+    let searchPoint = rootRawPointForPagerPoint(
+        tileIconCenter(indexOnPage: 0, metrics: searchMetrics, pager: pager),
+        pager: pager,
+        rootView: rootView
+    )
+    let searchTile = try #require(rootView.hitTest(searchPoint) as? LauncherTileView)
     #expect(searchTile.tileID == "app:test.12")
 }
 
@@ -358,4 +390,22 @@ private func applyApps(_ apps: [LauncherAppInfo], to store: LauncherStore) {
             schemaVersion: ApplicationCache.currentSchemaVersion
         )
     )
+}
+
+@MainActor
+private func rawPoint(fromLayoutPoint layoutPoint: NSPoint, in rootView: NSView) -> NSPoint {
+    NSPoint(x: layoutPoint.x, y: rootView.bounds.height - layoutPoint.y)
+}
+
+@MainActor
+private func rootRawPointForPagerPoint(
+    _ pagerPoint: NSPoint,
+    pager: NSView,
+    rootView: NSView
+) -> NSPoint {
+    let rootLayoutPoint = NSPoint(
+        x: pager.frame.minX + pagerPoint.x,
+        y: pager.frame.minY + pagerPoint.y
+    )
+    return rawPoint(fromLayoutPoint: rootLayoutPoint, in: rootView)
 }

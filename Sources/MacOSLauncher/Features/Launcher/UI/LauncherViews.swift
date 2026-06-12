@@ -132,14 +132,27 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
     }
 
     override func mouseDown(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
-        if headerView.frame.contains(point) {
-            let headerPoint = convert(point, to: headerView)
+        let rawPoint = convert(event.locationInWindow, from: nil)
+        let layoutPoint = topBasedPoint(from: rawPoint)
+        if headerView.frame.contains(layoutPoint) {
+            let headerPoint = NSPoint(
+                x: layoutPoint.x - headerView.frame.minX,
+                y: layoutPoint.y - headerView.frame.minY
+            )
             if searchField.frame.contains(headerPoint) {
                 window?.makeFirstResponder(searchField)
             }
             return
         }
+
+        if pager.frame.contains(layoutPoint) {
+            return
+        }
+
+        if let folderOverlay, folderOverlay.frame.contains(layoutPoint) {
+            return
+        }
+
         onClose("outsideClick")
     }
 
@@ -148,17 +161,25 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
             return nil
         }
 
+        let layoutPoint = topBasedPoint(from: point)
+
         if let folderOverlay {
-            let overlayPoint = convert(point, to: folderOverlay)
+            let overlayPoint = NSPoint(
+                x: layoutPoint.x - folderOverlay.frame.minX,
+                y: layoutPoint.y - folderOverlay.frame.minY
+            )
             if folderOverlay.bounds.contains(overlayPoint) {
-                logRootHitTest(point: point, result: "folderOverlay")
+                logRootHitTest(rawPoint: point, layoutPoint: layoutPoint, result: "folderOverlay")
                 return folderOverlay.hitTest(overlayPoint)
             }
         }
 
-        let headerPoint = convert(point, to: headerView)
-        if headerView.bounds.contains(headerPoint) {
-            let controls: [NSView] = [
+        if headerView.frame.contains(layoutPoint) {
+            let headerPoint = NSPoint(
+                x: layoutPoint.x - headerView.frame.minX,
+                y: layoutPoint.y - headerView.frame.minY
+            )
+            let controls: [HeaderButton] = [
                 closeButton,
                 rescanButton,
                 folderButton,
@@ -169,30 +190,56 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
             ]
 
             for control in controls {
-                let controlPoint = headerView.convert(headerPoint, to: control)
+                let controlPoint = NSPoint(
+                    x: headerPoint.x - control.frame.minX,
+                    y: headerPoint.y - control.frame.minY
+                )
                 if control.bounds.contains(controlPoint) {
                     logRootHitTest(
-                        point: point,
+                        rawPoint: point,
+                        layoutPoint: layoutPoint,
                         result: "header.control",
-                        detail: (control as? HeaderButton)?.debugName
+                        detail: control.debugName
                     )
                     return control.hitTest(controlPoint) ?? control
                 }
             }
 
             if searchField.frame.contains(headerPoint) {
-                let fieldPoint = headerView.convert(headerPoint, to: searchField)
-                logRootHitTest(point: point, result: "header.search", detail: "searchField")
+                let fieldPoint = NSPoint(
+                    x: headerPoint.x - searchField.frame.minX,
+                    y: headerPoint.y - searchField.frame.minY
+                )
+                logRootHitTest(
+                    rawPoint: point,
+                    layoutPoint: layoutPoint,
+                    result: "header.search",
+                    detail: "searchField"
+                )
                 return searchField.hitTest(fieldPoint) ?? searchField
             }
 
-            logRootHitTest(point: point, result: "header.background")
+            logRootHitTest(rawPoint: point, layoutPoint: layoutPoint, result: "header.background")
             return headerView
         }
 
-        let result = super.hitTest(point)
-        logRootHitTest(point: point, result: result == nil ? "nil" : "super")
-        return result
+        if pager.frame.contains(layoutPoint) {
+            let pagerPoint = NSPoint(
+                x: layoutPoint.x - pager.frame.minX,
+                y: layoutPoint.y - pager.frame.minY
+            )
+            let result = pager.hitTest(pagerPoint)
+            logRootHitTest(
+                rawPoint: point,
+                layoutPoint: layoutPoint,
+                result: result == nil ? "pager.nil" : "pager",
+                detail: result.map { String(reflecting: type(of: $0)) }
+            )
+            return result
+        }
+
+        logRootHitTest(rawPoint: point, layoutPoint: layoutPoint, result: "outside")
+        return nil
     }
 
     override func keyDown(with event: NSEvent) {
@@ -735,7 +782,16 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         overlay.update(folder: folder)
     }
 
-    private func logRootHitTest(point: NSPoint, result: String, detail: String? = nil) {
+    private func topBasedPoint(from point: NSPoint) -> NSPoint {
+        NSPoint(x: point.x, y: bounds.height - point.y)
+    }
+
+    private func logRootHitTest(
+        rawPoint: NSPoint,
+        layoutPoint: NSPoint,
+        result: String,
+        detail: String? = nil
+    ) {
         guard interactionLogThrottle.shouldLog("root.hitTest.\(result).\(detail ?? "none")", interval: 0.15) else {
             return
         }
@@ -743,7 +799,8 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
             .hitTest,
             "root.hitTest",
             fields: [
-                "point": lumaLogPoint(point),
+                "rawPoint": lumaLogPoint(rawPoint),
+                "layoutPoint": lumaLogPoint(layoutPoint),
                 "result": result,
                 "detail": detail ?? "nil",
                 "headerFrame": lumaLogRect(headerView.frame),
@@ -1397,8 +1454,28 @@ final class LauncherPagerView: NSView {
     }
 
     private func tile(atDraggingLocation location: NSPoint) -> LauncherTileView? {
-        let localPoint = convert(location, from: nil)
-        guard let tileView = hitTestTile(at: localPoint, from: self),
+        let rawLocalPoint = convert(location, from: nil)
+        let flippedLocalPoint = NSPoint(
+            x: rawLocalPoint.x,
+            y: bounds.height - rawLocalPoint.y
+        )
+        let rawHit = hitTestTile(at: rawLocalPoint, from: self)
+        let flippedHit = hitTestTile(at: flippedLocalPoint, from: self)
+
+        if interactionLogThrottle.shouldLog("pager.drag.locationCompare", interval: 0.10) {
+            LumaEventLog.shared.writeInteraction(
+                .drag,
+                "pager.drag.locationCompare",
+                fields: [
+                    "rawLocal": lumaLogPoint(rawLocalPoint),
+                    "flippedLocal": lumaLogPoint(flippedLocalPoint),
+                    "rawHit": rawHit?.tileID ?? "nil",
+                    "flippedHit": flippedHit?.tileID ?? "nil"
+                ]
+            )
+        }
+
+        guard let tileView = flippedHit ?? rawHit,
               activeTileIDs.contains(tileView.tileID),
               tileView.alphaValue > 0.05 else {
             return nil
@@ -1412,9 +1489,13 @@ final class LauncherPagerView: NSView {
             return nil
         }
 
-        let pagerPoint = convert(point, from: sourceView)
-        let pagePoint = NSPoint(x: pagerPoint.x, y: pagerPoint.y)
-        guard currentPage.bounds.contains(pagePoint) else {
+        let pagerPoint: NSPoint
+        if sourceView === self {
+            pagerPoint = point
+        } else {
+            pagerPoint = convert(point, from: sourceView)
+        }
+        guard currentPage.bounds.contains(pagerPoint) else {
             if interactionLogThrottle.shouldLog("pager.tileHit.outside", interval: 0.12) {
                 LumaEventLog.shared.writeInteraction(
                     .hitTest,
@@ -1422,7 +1503,7 @@ final class LauncherPagerView: NSView {
                     fields: [
                         "reason": "outsidePage",
                         "pagerPoint": lumaLogPoint(pagerPoint),
-                        "pagePoint": lumaLogPoint(pagePoint)
+                        "pageIndex": store.pageIndex
                     ]
                 )
             }
@@ -1432,14 +1513,15 @@ final class LauncherPagerView: NSView {
         let tileView = currentPage.subviews
             .compactMap { $0 as? LauncherTileView }
             .reversed()
-            .first { $0.frame.contains(pagePoint) }
+            .first { $0.frame.contains(pagerPoint) }
         if let tileView {
             LumaEventLog.shared.writeInteraction(
                 .hitTest,
                 "pager.tileHit.hit",
                 fields: [
                     "tileID": tileView.tileID,
-                    "pagePoint": lumaLogPoint(pagePoint),
+                    "pagerPoint": lumaLogPoint(pagerPoint),
+                    "tileFrame": lumaLogRect(tileView.frame),
                     "pageIndex": store.pageIndex
                 ]
             )
