@@ -25,6 +25,8 @@ final class LauncherReplicaPageView: NSView {
             tileView.frame = item.frame
             addSubview(tileView)
         }
+
+        layoutSubtreeIfNeeded()
     }
 
     func clear() {
@@ -107,7 +109,6 @@ final class LauncherReplicaTileView: NSView {
             width: bounds.width - 4,
             height: metrics.titleHeight
         )
-        LauncherTileVisualStyle.updateIconShadowPath(for: iconView.layer, bounds: iconView.bounds)
     }
 
     private func image(

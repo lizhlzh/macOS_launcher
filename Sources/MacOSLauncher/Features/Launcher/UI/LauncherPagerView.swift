@@ -11,6 +11,20 @@ import QuartzCore
 /// Tile/Pager 放置回调 -> Store 预览 -> 一次提交或回滚。
 @MainActor
 final class LauncherPagerView: NSView {
+    private enum TileHitMode: CustomStringConvertible {
+        case click
+        case dragTarget
+
+        var description: String {
+            switch self {
+            case .click:
+                "click"
+            case .dragTarget:
+                "dragTarget"
+            }
+        }
+    }
+
     weak var delegate: LauncherPagerDelegate?
 
     private let store: LauncherStore
@@ -33,10 +47,12 @@ final class LauncherPagerView: NSView {
     private var dragPreviewScheduled = false
     private var needsDragPreviewAfterCurrentPass = false
     private var currentDragCommitted = false
-    private var isFolderDropTarget = false
     private var edgePageWorkItem: DispatchWorkItem?
     private var edgePageDirection: Int = 0
     private var lastDragWindowLocation: NSPoint?
+    private var pendingFolderTargetID: String?
+    private var activeFolderTargetID: String?
+    private var folderTargetWorkItem: DispatchWorkItem?
     private let interactionLogThrottle = InteractionLogThrottle()
 
     override var isFlipped: Bool { true }
@@ -113,7 +129,7 @@ final class LauncherPagerView: NSView {
                 ]
             )
         }
-        if let tileView = hitTestTile(at: point, from: self),
+        if let tileView = hitTestTile(at: point, from: self, mode: .click),
            activeTileIDs.contains(tileView.tileID),
            tileView.alphaValue > 0.05 {
             if interactionLogThrottle.shouldLog("pager.hitTest.result.\(tileView.tileID)", interval: 0.30) {
@@ -688,6 +704,8 @@ final class LauncherPagerView: NSView {
             store: store,
             metrics: metrics
         )
+        leadingReplica.layoutSubtreeIfNeeded()
+        trailingReplica.layoutSubtreeIfNeeded()
 
         LumaEventLog.shared.writeInteraction(
             .performance,
@@ -725,8 +743,8 @@ final class LauncherPagerView: NSView {
             x: rawLocalPoint.x,
             y: bounds.height - rawLocalPoint.y
         )
-        let rawHit = hitTestTile(at: rawLocalPoint, from: self, useDragTarget: true)
-        let flippedHit = hitTestTile(at: flippedLocalPoint, from: self, useDragTarget: true)
+        let rawHit = hitTestTile(at: rawLocalPoint, from: self, mode: .dragTarget)
+        let flippedHit = hitTestTile(at: flippedLocalPoint, from: self, mode: .dragTarget)
 
         if interactionLogThrottle.shouldLog("pager.drag.locationCompare", interval: 0.10) {
             LumaEventLog.shared.writeInteraction(
@@ -752,7 +770,7 @@ final class LauncherPagerView: NSView {
     private func hitTestTile(
         at point: NSPoint,
         from sourceView: NSView,
-        useDragTarget: Bool = false
+        mode: TileHitMode
     ) -> LauncherTileView? {
         guard let currentPage = pageViews[store.pageIndex] else {
             LumaEventLog.shared.writeInteraction(.hitTest, "pager.tileHit.miss", fields: ["reason": "missingPage"])
@@ -780,29 +798,40 @@ final class LauncherPagerView: NSView {
             return nil
         }
 
-        let tileView = currentPage.subviews
+        let tileCandidates = currentPage.subviews
             .compactMap { $0 as? LauncherTileView }
             .reversed()
-            .first { view in
-                guard view.frame.contains(pagerPoint) else {
-                    return false
-                }
-                let localPoint = NSPoint(
-                    x: pagerPoint.x - view.frame.minX,
-                    y: pagerPoint.y - view.frame.minY
-                )
-                return useDragTarget
-                    ? view.containsDragTargetPoint(localPoint)
-                    : view.containsInteractivePoint(localPoint)
+        let tileView = tileCandidates.first { view in
+            guard view.frame.contains(pagerPoint) else {
+                return false
             }
+
+            let localPoint = NSPoint(
+                x: pagerPoint.x - view.frame.minX,
+                y: pagerPoint.y - view.frame.minY
+            )
+
+            switch mode {
+            case .click:
+                return view.containsClickPoint(localPoint)
+            case .dragTarget:
+                return view.containsDragTargetPoint(localPoint)
+            }
+        }
         if let tileView {
-            if interactionLogThrottle.shouldLog("pager.tileHit.hit.\(tileView.tileID)", interval: 0.30) {
+            if interactionLogThrottle.shouldLog("pager.tileHit.hit.\(tileView.tileID).\(mode)", interval: 0.30) {
+                let localPoint = NSPoint(
+                    x: pagerPoint.x - tileView.frame.minX,
+                    y: pagerPoint.y - tileView.frame.minY
+                )
                 LumaEventLog.shared.writeInteraction(
                     .hitTest,
                     "pager.tileHit.hit",
                     fields: [
                         "tileID": tileView.tileID,
+                        "mode": String(describing: mode),
                         "pagerPoint": lumaLogPoint(pagerPoint),
+                        "localPoint": lumaLogPoint(localPoint),
                         "tileFrame": lumaLogRect(tileView.frame),
                         "pageIndex": store.pageIndex
                     ]
@@ -887,13 +916,11 @@ final class LauncherPagerView: NSView {
     private func updateDropTarget(draggedID: String, target: LauncherTileView) {
         guard target.tileID != draggedID else {
             dropTargetID = nil
-            isFolderDropTarget = false
             return
         }
 
-        if dropTargetID != target.tileID || isFolderDropTarget {
+        if dropTargetID != target.tileID || activeFolderTargetID != nil || pendingFolderTargetID != nil {
             dropTargetID = target.tileID
-            isFolderDropTarget = false
             LumaEventLog.shared.writeInteraction(
                 .drag,
                 "drag.targetChanged",
@@ -907,28 +934,75 @@ final class LauncherPagerView: NSView {
         }
     }
 
-    private func updateFolderDropTarget(draggedID: String, target: LauncherTileView) {
-        guard target.tileID != draggedID else {
-            dropTargetID = nil
-            isFolderDropTarget = false
+    private func cancelFolderTarget(reason: String) {
+        folderTargetWorkItem?.cancel()
+        folderTargetWorkItem = nil
+        pendingFolderTargetID = nil
+        activeFolderTargetID = nil
+        if interactionLogThrottle.shouldLog("drag.folderTarget.cancel.\(reason)", interval: 0.20) {
+            LumaEventLog.shared.writeInteraction(
+                .drag,
+                "drag.folderTargetCancelled",
+                fields: [
+                    "dragID": store.currentDragID ?? "nil",
+                    "reason": reason
+                ]
+            )
+        }
+    }
+
+    private func scheduleFolderTargetIfNeeded(
+        draggedID: String,
+        target: LauncherTileView,
+        at windowLocation: NSPoint
+    ) {
+        guard shouldCreateFolder(from: draggedID, onto: target, at: windowLocation) else {
+            if activeFolderTargetID != target.tileID {
+                cancelFolderTarget(reason: "outsideCenter")
+            }
             return
         }
 
-        guard dropTargetID != target.tileID || !isFolderDropTarget else {
+        if activeFolderTargetID == target.tileID || pendingFolderTargetID == target.tileID {
             return
         }
 
+        folderTargetWorkItem?.cancel()
+        pendingFolderTargetID = target.tileID
         dropTargetID = target.tileID
-        isFolderDropTarget = true
+
         LumaEventLog.shared.writeInteraction(
             .drag,
-            "drag.folderTargetChanged",
+            "drag.folderTargetPending",
             fields: [
                 "dragID": store.currentDragID ?? "nil",
                 "draggedID": draggedID,
                 "targetID": target.tileID
             ]
         )
+
+        let workItem = DispatchWorkItem { [weak self, weak target] in
+            guard let self, let target, self.pendingFolderTargetID == target.tileID else {
+                return
+            }
+
+            self.pendingFolderTargetID = nil
+            self.activeFolderTargetID = target.tileID
+            self.folderTargetWorkItem = nil
+
+            LumaEventLog.shared.writeInteraction(
+                .drag,
+                "drag.folderTargetActivated",
+                fields: [
+                    "dragID": self.store.currentDragID ?? "nil",
+                    "draggedID": draggedID,
+                    "targetID": target.tileID
+                ]
+            )
+        }
+
+        folderTargetWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.28, execute: workItem)
     }
 
     private func updateEdgePagingIfNeeded(windowLocation: NSPoint) {
@@ -985,7 +1059,7 @@ final class LauncherPagerView: NSView {
             }
 
             self.dropTargetID = nil
-            self.isFolderDropTarget = false
+            self.cancelFolderTarget(reason: "edgePage")
             LumaEventLog.shared.writeInteraction(
                 .drag,
                 "drag.edgePage",
@@ -1009,11 +1083,14 @@ final class LauncherPagerView: NSView {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: workItem)
     }
 
-    private func cancelEdgePaging() {
+    private func cancelEdgePaging(clearFolderTarget: Bool = false) {
         edgePageWorkItem?.cancel()
         edgePageWorkItem = nil
         edgePageDirection = 0
         lastDragWindowLocation = nil
+        if clearFolderTarget {
+            cancelFolderTarget(reason: "edgePagingCancelled")
+        }
     }
 
     private func currentDragWindowLocation(from view: NSView) -> NSPoint? {
@@ -1030,6 +1107,7 @@ final class LauncherPagerView: NSView {
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
         guard let draggedID = sender.draggingPasteboard.string(forType: .string) else {
             cancelEdgePaging()
+            cancelFolderTarget(reason: "missingDraggedID")
             return .move
         }
 
@@ -1040,6 +1118,7 @@ final class LauncherPagerView: NSView {
               target.tileID != draggedID else {
             if !store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 cancelEdgePaging()
+                cancelFolderTarget(reason: "searchActive")
             }
             return .move
         }
@@ -1055,9 +1134,26 @@ final class LauncherPagerView: NSView {
                 ]
             )
         }
-        if shouldCreateFolder(from: draggedID, onto: target, at: sender.draggingLocation) {
-            updateFolderDropTarget(draggedID: draggedID, target: target)
+        if let folder = target.tile.folder, draggedID.hasPrefix("app:") {
+            if activeFolderTargetID != nil || pendingFolderTargetID != nil {
+                cancelFolderTarget(reason: "targetIsFolder")
+            }
+            dropTargetID = folder.tileID
             return .move
+        }
+        if activeFolderTargetID == target.tileID {
+            return .move
+        }
+        if shouldCreateFolder(from: draggedID, onto: target, at: sender.draggingLocation) {
+            scheduleFolderTargetIfNeeded(
+                draggedID: draggedID,
+                target: target,
+                at: sender.draggingLocation
+            )
+            return .move
+        }
+        if activeFolderTargetID != nil || pendingFolderTargetID != nil {
+            cancelFolderTarget(reason: "targetChanged")
         }
         updateDropTarget(draggedID: draggedID, target: target)
         return .move
@@ -1065,8 +1161,8 @@ final class LauncherPagerView: NSView {
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
         dropTargetID = nil
-        isFolderDropTarget = false
         cancelEdgePaging()
+        cancelFolderTarget(reason: "draggingExited")
     }
 
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
@@ -1078,8 +1174,8 @@ final class LauncherPagerView: NSView {
         defer {
             currentDragCommitted = didCommitDrop
             dropTargetID = nil
-            isFolderDropTarget = false
             cancelEdgePaging()
+            cancelFolderTarget(reason: "performDrop")
         }
 
         guard store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -1100,7 +1196,8 @@ final class LauncherPagerView: NSView {
         )
         if let folder = target.tile.folder, draggedID.hasPrefix("app:") {
             store.addApp(draggedID, to: folder.id)
-        } else if shouldCreateFolder(from: draggedID, onto: target, at: sender.draggingLocation) {
+        } else if activeFolderTargetID == target.tileID
+            || shouldCreateFolder(from: draggedID, onto: target, at: sender.draggingLocation) {
             store.createFolder(containingAppIDs: [draggedID, target.tileID])
         } else {
             updateDropTarget(draggedID: draggedID, target: target)
@@ -1144,8 +1241,8 @@ extension LauncherPagerView: LauncherTileViewDelegate {
 
     func tileViewDidEndDragging(_ view: LauncherTileView, operation: NSDragOperation) {
         dropTargetID = nil
-        isFolderDropTarget = false
         cancelEdgePaging()
+        cancelFolderTarget(reason: "dragEnded")
         let dragID = store.currentDragID
         let hasPendingDragPreview = store.hasPendingDragPreview
         let shouldCommit =
@@ -1175,6 +1272,7 @@ extension LauncherPagerView: LauncherTileViewDelegate {
     func tileView(_ view: LauncherTileView, draggingUpdatedWith draggedID: String) -> NSDragOperation {
         guard let windowLocation = currentDragWindowLocation(from: view) else {
             cancelEdgePaging()
+            cancelFolderTarget(reason: "missingWindowLocation")
             return []
         }
 
@@ -1182,12 +1280,30 @@ extension LauncherPagerView: LauncherTileViewDelegate {
 
         guard store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             cancelEdgePaging()
+            cancelFolderTarget(reason: "searchActive")
             return []
         }
 
-        if shouldCreateFolder(from: draggedID, onto: view, at: windowLocation) {
-            updateFolderDropTarget(draggedID: draggedID, target: view)
+        if let folder = view.tile.folder, draggedID.hasPrefix("app:") {
+            if activeFolderTargetID != nil || pendingFolderTargetID != nil {
+                cancelFolderTarget(reason: "targetIsFolder")
+            }
+            dropTargetID = folder.tileID
             return .move
+        }
+        if activeFolderTargetID == view.tileID {
+            return .move
+        }
+        if shouldCreateFolder(from: draggedID, onto: view, at: windowLocation) {
+            scheduleFolderTargetIfNeeded(
+                draggedID: draggedID,
+                target: view,
+                at: windowLocation
+            )
+            return .move
+        }
+        if activeFolderTargetID != nil || pendingFolderTargetID != nil {
+            cancelFolderTarget(reason: "targetChanged")
         }
         updateDropTarget(draggedID: draggedID, target: view)
         return .move
@@ -1198,8 +1314,8 @@ extension LauncherPagerView: LauncherTileViewDelegate {
         defer {
             currentDragCommitted = didCommitDrop
             dropTargetID = nil
-            isFolderDropTarget = false
             cancelEdgePaging()
+            cancelFolderTarget(reason: "tilePerformDrop")
         }
 
         guard store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -1218,7 +1334,8 @@ extension LauncherPagerView: LauncherTileViewDelegate {
         )
         if let folder = view.tile.folder, draggedID.hasPrefix("app:") {
             store.addApp(draggedID, to: folder.id)
-        } else if shouldCreateFolder(from: draggedID, onto: view, at: windowLocation) {
+        } else if activeFolderTargetID == view.tileID
+            || shouldCreateFolder(from: draggedID, onto: view, at: windowLocation) {
             store.createFolder(containingAppIDs: [draggedID, view.tileID])
         } else {
             updateDropTarget(draggedID: draggedID, target: view)
@@ -1237,7 +1354,8 @@ extension LauncherPagerView: LauncherTileViewDelegate {
               draggedID != target.tileID else {
             return false
         }
-        return target.wantsCreateFolderDrop(atWindowLocation: windowLocation)
+        let localPoint = target.convert(windowLocation, from: nil)
+        return target.containsFolderDropPoint(localPoint)
     }
 
     func tileView(_ view: LauncherTileView, contextMenuFor tile: LauncherTile) -> NSMenu {

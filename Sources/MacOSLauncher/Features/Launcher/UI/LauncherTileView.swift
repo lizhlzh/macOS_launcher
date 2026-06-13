@@ -103,7 +103,6 @@ final class LauncherTileView: NSView, NSDraggingSource {
             width: bounds.width - 4,
             height: metrics.titleHeight
         )
-        LauncherTileVisualStyle.updateIconShadowPath(for: iconView.layer, bounds: iconView.bounds)
     }
 
     override func updateTrackingAreas() {
@@ -121,19 +120,24 @@ final class LauncherTileView: NSView, NSDraggingSource {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        containsInteractivePoint(point) ? self : nil
+        containsClickPoint(point) ? self : nil
     }
 
-    func containsInteractivePoint(_ point: NSPoint) -> Bool {
-        let iconHitRect = iconView.frame.insetBy(dx: -10, dy: -10)
-        let titleHitRect = titleLabel.frame.insetBy(dx: -6, dy: -4)
-        return iconHitRect.contains(point) || titleHitRect.contains(point)
+    func containsClickPoint(_ point: NSPoint) -> Bool {
+        let iconRect = iconView.frame.insetBy(dx: -6, dy: -6)
+        let titleRect = titleLabel.frame.insetBy(dx: -4, dy: -3)
+        return iconRect.contains(point) || titleRect.contains(point)
     }
 
     func containsDragTargetPoint(_ point: NSPoint) -> Bool {
-        let iconHitRect = iconView.frame.insetBy(dx: -18, dy: -16)
-        let titleHitRect = titleLabel.frame.insetBy(dx: -10, dy: -8)
-        return iconHitRect.contains(point) || titleHitRect.contains(point)
+        let iconRect = iconView.frame.insetBy(dx: -18, dy: -16)
+        let titleRect = titleLabel.frame.insetBy(dx: -10, dy: -8)
+        return iconRect.contains(point) || titleRect.contains(point)
+    }
+
+    func containsFolderDropPoint(_ point: NSPoint) -> Bool {
+        let inset = max(14, min(iconView.frame.width, iconView.frame.height) * 0.24)
+        return iconView.frame.insetBy(dx: inset, dy: inset).contains(point)
     }
 
     override func mouseEntered(with event: NSEvent) {
@@ -350,12 +354,7 @@ final class LauncherTileView: NSView, NSDraggingSource {
 
     func wantsCreateFolderDrop(atWindowLocation location: NSPoint) -> Bool {
         let localPoint = convert(location, from: nil)
-        guard iconView.frame.contains(localPoint) else {
-            return false
-        }
-
-        let inset = max(12, min(iconView.frame.width, iconView.frame.height) * 0.24)
-        return iconView.frame.insetBy(dx: inset, dy: inset).contains(localPoint)
+        return containsFolderDropPoint(localPoint)
     }
 
     private func image(for tile: LauncherTile) -> NSImage? {
@@ -398,9 +397,11 @@ final class LauncherTileView: NSView, NSDraggingSource {
         var targetTransform = CATransform3DIdentity
         targetTransform = CATransform3DTranslate(targetTransform, 0, targetTranslationY, 0)
         targetTransform = CATransform3DScale(targetTransform, targetScale, targetScale, 1)
-        let targetShadowOpacity: Float = hoverActive ? 0.34 : 0.28
-        let targetShadowRadius: CGFloat = hoverActive ? 14 : 12
-        let targetShadowOffset = CGSize(width: 0, height: hoverActive ? -7 : -6)
+        let targetShadowOpacity: Float = hoverActive ? 0.32 : LauncherTileVisualStyle.iconShadowOpacity
+        let targetShadowRadius: CGFloat = hoverActive ? 13 : LauncherTileVisualStyle.iconShadowRadius
+        let targetShadowOffset = hoverActive
+            ? CGSize(width: 0, height: -7)
+            : LauncherTileVisualStyle.iconShadowOffset
         titleLabel.textColor = NSColor.white.withAlphaComponent(isHiddenApp ? 0.76 : 1)
 
         if animated {
