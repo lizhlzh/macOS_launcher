@@ -62,10 +62,7 @@ final class LauncherTileView: NSView, NSDraggingSource {
         layer?.shouldRasterize = true
         iconView.imageScaling = .scaleProportionallyUpOrDown
         iconView.wantsLayer = true
-        iconView.layer?.shadowColor = NSColor.black.cgColor
-        iconView.layer?.shadowOpacity = 0.28
-        iconView.layer?.shadowRadius = 12
-        iconView.layer?.shadowOffset = CGSize(width: 0, height: -6)
+        LauncherTileVisualStyle.configureIconLayer(iconView.layer)
         addSubview(iconView)
 
         titleLabel.font = .systemFont(ofSize: 13, weight: .medium)
@@ -76,10 +73,7 @@ final class LauncherTileView: NSView, NSDraggingSource {
         titleLabel.cell?.wraps = true
         titleLabel.cell?.usesSingleLineMode = false
         titleLabel.wantsLayer = true
-        titleLabel.layer?.shadowColor = NSColor.black.cgColor
-        titleLabel.layer?.shadowOpacity = 0.45
-        titleLabel.layer?.shadowRadius = 2
-        titleLabel.layer?.shadowOffset = CGSize(width: 0, height: -1)
+        LauncherTileVisualStyle.configureTitleLayer(titleLabel.layer)
         addSubview(titleLabel)
 
         registerForDraggedTypes([.string])
@@ -109,6 +103,7 @@ final class LauncherTileView: NSView, NSDraggingSource {
             width: bounds.width - 4,
             height: metrics.titleHeight
         )
+        LauncherTileVisualStyle.updateIconShadowPath(for: iconView.layer, bounds: iconView.bounds)
     }
 
     override func updateTrackingAreas() {
@@ -126,7 +121,19 @@ final class LauncherTileView: NSView, NSDraggingSource {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        bounds.contains(point) ? self : nil
+        containsInteractivePoint(point) ? self : nil
+    }
+
+    func containsInteractivePoint(_ point: NSPoint) -> Bool {
+        let iconHitRect = iconView.frame.insetBy(dx: -10, dy: -10)
+        let titleHitRect = titleLabel.frame.insetBy(dx: -6, dy: -4)
+        return iconHitRect.contains(point) || titleHitRect.contains(point)
+    }
+
+    func containsDragTargetPoint(_ point: NSPoint) -> Bool {
+        let iconHitRect = iconView.frame.insetBy(dx: -18, dy: -16)
+        let titleHitRect = titleLabel.frame.insetBy(dx: -10, dy: -8)
+        return iconHitRect.contains(point) || titleHitRect.contains(point)
     }
 
     override func mouseEntered(with event: NSEvent) {

@@ -51,14 +51,10 @@ final class LauncherReplicaTileView: NSView {
 
         wantsLayer = true
         layer?.drawsAsynchronously = true
-        layer?.shouldRasterize = true
 
         iconView.imageScaling = .scaleProportionallyUpOrDown
         iconView.wantsLayer = true
-        iconView.layer?.shadowColor = NSColor.black.cgColor
-        iconView.layer?.shadowOpacity = 0.28
-        iconView.layer?.shadowRadius = 12
-        iconView.layer?.shadowOffset = CGSize(width: 0, height: -6)
+        LauncherTileVisualStyle.configureIconLayer(iconView.layer)
         addSubview(iconView)
 
         titleLabel.font = .systemFont(ofSize: 13, weight: .medium)
@@ -69,10 +65,7 @@ final class LauncherReplicaTileView: NSView {
         titleLabel.cell?.wraps = true
         titleLabel.cell?.usesSingleLineMode = false
         titleLabel.wantsLayer = true
-        titleLabel.layer?.shadowColor = NSColor.black.cgColor
-        titleLabel.layer?.shadowOpacity = 0.45
-        titleLabel.layer?.shadowRadius = 2
-        titleLabel.layer?.shadowOffset = CGSize(width: 0, height: -1)
+        LauncherTileVisualStyle.configureTitleLayer(titleLabel.layer)
         addSubview(titleLabel)
 
         titleLabel.stringValue = tile.title
@@ -114,6 +107,7 @@ final class LauncherReplicaTileView: NSView {
             width: bounds.width - 4,
             height: metrics.titleHeight
         )
+        LauncherTileVisualStyle.updateIconShadowPath(for: iconView.layer, bounds: iconView.bounds)
     }
 
     private func image(
