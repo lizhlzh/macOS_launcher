@@ -1,866 +1,930 @@
-继续在上一轮《0613.md》修改手册基础上优化 macOS_launcher / Luma。不要推翻上一版的主方向：点击命中、顶部按钮点击、中文本地化、App 名称解析这些已经基本稳定。本轮是在上一版基础上增加产品交互规则，并细化排序、编辑、筛选、文件夹和编辑态动画。
 
-本轮新增/调整的问题：
+````markdown
+请严格执行本轮收口任务。不要写方案，不要全仓库扫描，不要修改 Tests，不要运行 swift test。
 
-1. 默认长按拖动排序后应直接提交，不需要再点对钩；
-2. 只有用户主动点击顶部“编辑/排序”按钮进入整理模式后，才需要点击对钩提交；
-3. 默认显示“可见应用”，不是“全部应用”；
-4. 切换“可见应用 / 全部应用 / 已隐藏应用”显示模式时，如果当前不在第一页，应动画切换到第一页；
-5. 创建文件夹后，应动画切换到新文件夹所在页面；
-6. 点击编辑按钮后，App 右上角出现的拖动图标很难看，改成类似 iOS / Launchpad 的图标抖动，不要显示那个右上角丑图标。
+本轮只修 4 个问题：
+1. 用轻量副本页替代 edge replicas 的整页快照；
+2. 修复拖拽松手后卡顿、图标灰色停留约 1 秒；
+3. 修复点击 Pager 空白区域 / 背景空白区域不能退出 Launcher；
+4. 对高频 hitTest 日志做最小降噪。
 
-重点文件：
-- Sources/MacOSLauncher/Features/Launcher/State/LauncherStore.swift
+只允许修改：
 - Sources/MacOSLauncher/Features/Launcher/UI/LauncherViews.swift
-- Sources/MacOSLauncher/Features/Launcher/UI/Header/HeaderButton.swift
-- Sources/MacOSLauncher/Features/Launcher/UI/Tile/LauncherTileView.swift，如果 Tile 仍在 LauncherViews.swift 中，就在当前文件中修改
-- Sources/MacOSLauncher/Shared/Models/Models.swift
-- Sources/MacOSLauncher/Shared/Localization/LumaLocalization.swift
-- Tests/LumaTests/...
 
-一、不要再改的内容
+禁止修改：
+- Tests
+- Package.swift
+- HeaderButton.swift
+- LauncherStore.swift，除非编译必须
+- LauncherRootView.mouseDown 坐标转换算法
+- HeaderButton 布局
+- AppIcon 打包脚本
+- 拖拽排序状态机
+- Layout transition 动画
+- App 名称解析
+- 背景、壁纸、启动动画
+- 不要新增第三方依赖
+- 不要 commit，不要 push
 
-不要再改：
-- LauncherRootView.hitTest
-- LauncherRootView.mouseDown 坐标转换
-- LauncherPagerView.hitTest 主路径
-- HeaderButton.mouseDown 触发逻辑
-- ApplicationDisplayNameResolver 的中文名称解析主逻辑
-- 基础 L10n 结构
-- 拖拽排序的轻量动画方向
-- Layout 切换的高性能方向
+最后只运行：
+swift build
 
-本轮是新增交互语义，不是重写主架构。
+---
 
-二、明确两种排序模式
+## 一、用轻量副本页替代整页快照
 
-当前排序/编辑语义需要拆成两类：
+### 当前问题
 
-1. 快速拖拽排序 Quick Reorder
-- 默认状态下，用户长按 App 并拖动；
-- 拖动过程中排序预览；
-- 鼠标松开后立即提交；
-- 自动保存 preferences；
-- 不需要点击顶部对钩；
-- 拖拽结束后退出临时拖拽状态。
+现在 `refreshEdgeReplicas()` 用整页快照实现首尾循环分页：
 
-2. 手动整理模式 Manual Edit / Jiggle Mode
-- 用户主动点击顶部编辑/排序按钮进入；
-- App 进入抖动状态；
-- 用户可以连续拖动多个 App；
-- 拖动过程中只更新内存顺序；
-- 不立即保存；
-- 用户点击顶部对钩后才提交保存；
-- 如果用户取消、ESC、关闭 Launcher，可以按产品选择提交或回滚；本轮建议 ESC/关闭回滚，点击对钩提交。
+```swift
+leadingReplica.image = snapshot(of: lastPage)
+trailingReplica.image = snapshot(of: firstPage)
+````
+
+`snapshot(of:)` 内部使用：
+
+```swift
+bitmapImageRepForCachingDisplay
+cacheDisplay
+```
+
+这会造成整页 CPU 渲染。日志里一次 `pager.refreshEdgeReplicas` 可达 250ms~300ms+。拖拽松手时如果同步刷新，会造成卡顿和图标灰色停留。
+
+### 目标
+
+* 不再为首尾循环分页生成整页 `NSImage` 快照；
+* 改为真实但不可交互的轻量副本页；
+* 副本页只渲染图标和标题；
+* 副本页不参与 hitTest、不响应点击、不支持拖拽、不注册 trackingArea；
+* 保持当前循环分页视觉效果；
+* 保持当前 `setPage(...)` 的 recenter 机制；
+* 不影响真实 `pageViews` / `LauncherTileView`；
+* 不影响拖拽排序、打开应用、右键菜单。
+
+### 重要说明
+
+轻量副本页不是最终停留页。它只用于首尾循环滑动过程中的视觉占位。
+
+当前 `setPage(...)` 已经有类似逻辑：
+
+* 从第一页循环到最后一页时，动画目标先到 leading replica；
+* 动画完成后，无动画 recenter 到真实 lastPage；
+* 从最后一页循环到第一页时，动画目标先到 trailing replica；
+* 动画完成后，无动画 recenter 到真实 page0。
+
+本轮必须保留这个 `recenterAfterAnimation / recenterOrigin` 机制，不要改坏。
+
+---
+
+### A. 替换 leadingReplica / trailingReplica 类型
+
+找到 `LauncherPagerView` 里原来的：
+
+```swift
+private let leadingReplica = NSImageView()
+private let trailingReplica = NSImageView()
+```
+
+或等价定义。
+
+替换为：
+
+```swift
+private let leadingReplica = LauncherReplicaPageView()
+private let trailingReplica = LauncherReplicaPageView()
+```
+
+要求：
+
+* 变量名保持 `leadingReplica` / `trailingReplica`，减少调用点改动；
+* 类型必须是新的轻量副本页，不再是 `NSImageView`；
+* 添加到 `contentView` 的位置保持原有逻辑；
+* 副本页必须 `hitTest` 返回 `nil`。
+
+---
+
+### B. 新增轻量副本页视图
+
+在 `LauncherViews.swift` 中新增两个 private class，放在 `LauncherPagerView` 附近即可。
+
+#### 1. LauncherReplicaPageView
+
+职责：
+
+* 只负责显示一页的副本 tile；
+* 不处理事件；
+* 不持有业务状态；
+* 每次 render 根据传入 items 重建或复用子视图；
+* 子视图数量最多一页 `itemsPerPage`，允许简单 remove/recreate。
+
+推荐实现：
+
+```swift
+@MainActor
+private final class LauncherReplicaPageView: NSView {
+    override var isFlipped: Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    func render(
+        items: [(tile: LauncherTile, frame: NSRect)],
+        store: LauncherStore,
+        metrics: LauncherGridMetrics
+    ) {
+        subviews.forEach { $0.removeFromSuperview() }
+
+        for item in items {
+            let tileView = LauncherReplicaTileView(
+                tile: item.tile,
+                store: store,
+                metrics: metrics
+            )
+            tileView.frame = item.frame
+            addSubview(tileView)
+        }
+    }
+
+    func clear() {
+        subviews.forEach { $0.removeFromSuperview() }
+    }
+}
+```
+
+#### 2. LauncherReplicaTileView
+
+职责：
+
+* 只显示 icon + title；
+* 不注册拖拽；
+* 不注册 tracking；
+* 不响应 hitTest；
+* 样式尽量与 `LauncherTileView` 视觉一致；
+* 不要复用 `LauncherTileView`，避免带入交互、拖拽、hover、menu、jiggle 等行为。
+
+推荐实现：
+
+```swift
+@MainActor
+private final class LauncherReplicaTileView: NSView {
+    private let iconView = NSImageView()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let metrics: LauncherGridMetrics
+
+    override var isFlipped: Bool { true }
+
+    init(
+        tile: LauncherTile,
+        store: LauncherStore,
+        metrics: LauncherGridMetrics
+    ) {
+        self.metrics = metrics
+        super.init(frame: .zero)
+
+        wantsLayer = true
+        layer?.drawsAsynchronously = true
+        layer?.shouldRasterize = true
+
+        iconView.imageScaling = .scaleProportionallyUpOrDown
+        iconView.wantsLayer = true
+        iconView.layer?.shadowColor = NSColor.black.cgColor
+        iconView.layer?.shadowOpacity = 0.28
+        iconView.layer?.shadowRadius = 12
+        iconView.layer?.shadowOffset = CGSize(width: 0, height: -6)
+        addSubview(iconView)
+
+        titleLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        titleLabel.textColor = .white
+        titleLabel.alignment = .center
+        titleLabel.maximumNumberOfLines = 2
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.cell?.wraps = true
+        titleLabel.cell?.usesSingleLineMode = false
+        titleLabel.wantsLayer = true
+        titleLabel.layer?.shadowColor = NSColor.black.cgColor
+        titleLabel.layer?.shadowOpacity = 0.45
+        titleLabel.layer?.shadowRadius = 2
+        titleLabel.layer?.shadowOffset = CGSize(width: 0, height: -1)
+        addSubview(titleLabel)
+
+        titleLabel.stringValue = tile.title
+        iconView.image = image(for: tile, store: store, metrics: metrics)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        layer?.rasterizationScale = window?.backingScaleFactor
+            ?? NSScreen.main?.backingScaleFactor
+            ?? 2
+    }
+
+    override func layout() {
+        super.layout()
+
+        let iconX = floor((bounds.width - metrics.iconSize) / 2)
+        let iconY = metrics.tileVerticalPadding
+
+        iconView.frame = NSRect(
+            x: iconX,
+            y: iconY,
+            width: metrics.iconSize,
+            height: metrics.iconSize
+        )
+
+        titleLabel.frame = NSRect(
+            x: 2,
+            y: iconView.frame.maxY + metrics.iconTitleSpacing,
+            width: bounds.width - 4,
+            height: metrics.titleHeight
+        )
+    }
+
+    private func image(
+        for tile: LauncherTile,
+        store: LauncherStore,
+        metrics: LauncherGridMetrics
+    ) -> NSImage? {
+        switch tile.kind {
+        case let .app(app):
+            return store.appIcon(for: app, size: metrics.iconSize)
+        case let .folder(_, apps):
+            return FolderIconRenderer.image(
+                apps: apps,
+                store: store,
+                size: metrics.iconSize
+            )
+        }
+    }
+}
+```
+
+如果已有类型名称冲突，可以改成 `EdgeReplicaPageView` / `EdgeReplicaTileView`，但职责不变。
+
+---
+
+### C. 修改 refreshEdgeReplicas()
+
+保留方法名 `refreshEdgeReplicas()`，避免大范围改调用点，但内部不要再做 snapshot。
+
+改成类似：
+
+```swift
+private func refreshEdgeReplicas() {
+    let start = CACurrentMediaTime()
+
+    guard renderedPageCount > 1 else {
+        leadingReplica.clear()
+        trailingReplica.clear()
+        leadingReplica.isHidden = true
+        trailingReplica.isHidden = true
+        LumaEventLog.shared.writeInteraction(
+            .performance,
+            "pager.refreshEdgeReplicaPages",
+            fields: [
+                "pages": renderedPageCount,
+                "leadingItems": 0,
+                "trailingItems": 0,
+                "durationMS": Int((CACurrentMediaTime() - start) * 1_000)
+            ]
+        )
+        return
+    }
+
+    leadingReplica.isHidden = false
+    trailingReplica.isHidden = false
+
+    leadingReplica.frame = NSRect(
+        x: 0,
+        y: 0,
+        width: bounds.width,
+        height: bounds.height
+    )
+
+    trailingReplica.frame = NSRect(
+        x: CGFloat(renderedPageCount + 1) * bounds.width,
+        y: 0,
+        width: bounds.width,
+        height: bounds.height
+    )
+
+    let lastPageItems = replicaItems(for: renderedPageCount - 1)
+    let firstPageItems = replicaItems(for: 0)
+
+    leadingReplica.render(
+        items: lastPageItems,
+        store: store,
+        metrics: metrics
+    )
+
+    trailingReplica.render(
+        items: firstPageItems,
+        store: store,
+        metrics: metrics
+    )
+
+    LumaEventLog.shared.writeInteraction(
+        .performance,
+        "pager.refreshEdgeReplicaPages",
+        fields: [
+            "pages": renderedPageCount,
+            "leadingItems": lastPageItems.count,
+            "trailingItems": firstPageItems.count,
+            "durationMS": Int((CACurrentMediaTime() - start) * 1_000)
+        ]
+    )
+}
+```
+
+---
+
+### D. 新增 replicaItems(for:)
+
+在 `LauncherPagerView` 中新增：
+
+```swift
+private func replicaItems(for pageIndex: Int) -> [(tile: LauncherTile, frame: NSRect)] {
+    let tiles = store.visibleTiles
+    guard metrics.itemsPerPage > 0 else {
+        return []
+    }
+
+    let startIndex = pageIndex * metrics.itemsPerPage
+    guard startIndex < tiles.count else {
+        return []
+    }
+
+    let endIndex = min(startIndex + metrics.itemsPerPage, tiles.count)
+
+    return (startIndex..<endIndex).map { index in
+        (tile: tiles[index], frame: frameForTile(at: index))
+    }
+}
+```
+
+说明：
+
+* `frameForTile(at:)` 现在内部已经按 `index % metrics.itemsPerPage` 计算本页内位置；
+* 所以这里可以直接传全局 index；
+* 不要给 replica tile 加 page offset；
+* replica page 自己的 frame 已经在 leading/trailing 位置。
+
+---
+
+### E. 删除整页 snapshot 函数
+
+删除：
+
+```swift
+private func snapshot(of view: NSView) -> NSImage?
+```
+
+以及仅用于 edge replicas 的整页 bitmap 逻辑。
 
 注意：
-当前代码里的 editButton 实际承担“进入整理模式 / 点击对钩提交”的功能。用户口中的“排序按钮”在这里可理解为当前 editButton/checkmark 按钮，不要和 Sort 菜单按钮混淆。
 
-三、Store 增加编辑会话状态
+* 不要删除 `LauncherTileView.dragPreviewImage()`；
+* 拖拽图标预览仍可以保留小图快照；
+* 允许 `LauncherTileView.dragPreviewImage()` 中继续使用 `bitmapImageRepForCachingDisplay`；
+* 禁止 edge replica 使用 `bitmapImageRepForCachingDisplay / cacheDisplay`。
 
-在 LauncherStore 中增加：
+---
 
-enum ReorderSessionKind {
-    case none
-    case quickDrag
-    case manualEdit
-}
+### F. 排序后副本页刷新规则
 
-新增状态：
+轻量副本页是 `store.visibleTiles + metrics` 派生出来的缓存视图。
 
-private(set) var reorderSessionKind: ReorderSessionKind = .none
-private var manualEditOriginalTileOrder: [String]?
+规则：
 
-或者不用 enum，也可以用：
+1. 拖拽排序过程中不要刷新 `leadingReplica / trailingReplica`；
+2. 拖拽提交后，如果 `shouldCommit == true`，调用 `scheduleEdgeReplicaRefresh(after: 0.25)`；
+3. `scheduleEdgeReplicaRefresh` 最终调用 `refreshEdgeReplicas()`；
+4. 此时 `refreshEdgeReplicas()` 只重新 render 轻量副本页，不做整页 bitmap snapshot；
+5. 不要在 `performDropWith / performDragOperation` 的 defer 中刷新副本页；
+6. 不要同步刷新副本页；
+7. 本轮先采用“排序提交后延迟刷新一次”的简单策略；
+8. 不要做“只在第一页或最后一页受影响时刷新”的复杂优化。
 
-private(set) var isManualEditing = false
-private var manualEditOriginalTileOrder: [String]?
-private var isQuickDragging = false
+---
 
-推荐 enum，更清晰。
+### G. 初始化和布局要求
 
-四、修改 beginEditing / endEditing 语义
+确认 `leadingReplica / trailingReplica` 仍然被添加到 `contentView`。
 
-当前 beginEditing / endEditing 只是开关 isEditing，不区分提交。需要改成：
+如果原先是：
 
-func beginManualEditing() {
-    guard reorderSessionKind != .manualEdit else { return }
+```swift
+contentView.addSubview(leadingReplica)
+contentView.addSubview(trailingReplica)
+```
 
-    manualEditOriginalTileOrder = tileOrder
-    reorderSessionKind = .manualEdit
-    isEditing = true
-    draggedTileID = nil
+可以保留。
 
-    LumaEventLog.shared.writeInteraction(
-        .drag,
-        "manualEdit.begin",
-        fields: [
-            "tileOrderCount": tileOrder.count
-        ]
-    )
+注意：
 
-    onChange?(.editing)
-}
+* `leadingReplica` 位于 `x = 0`；
+* 正式 page0 位于 `x = bounds.width`；
+* 正式 pageN 位于 `x = CGFloat(pageIndex + 1) * bounds.width`；
+* `trailingReplica` 位于 `x = CGFloat(renderedPageCount + 1) * bounds.width`；
+* 不要改变当前 `contentView` 的 origin 计算；
+* 不要改坏 `setPage(...)` 的首尾 recenter 逻辑。
 
-func commitManualEditing() {
-    guard reorderSessionKind == .manualEdit else { return }
+---
 
-    savePreferences()
+### H. 绝对不要做
 
-    reorderSessionKind = .none
-    manualEditOriginalTileOrder = nil
-    draggedTileID = nil
-    isEditing = false
+* 不要用 `LauncherTileView` 作为 replica 子视图；
+* 不要注册拖拽；
+* 不要添加 trackingArea；
+* 不要支持右键菜单；
+* 不要让副本页 hitTest；
+* 不要使用 `NSImageView` 整页快照；
+* 不要调用 `bitmapImageRepForCachingDisplay` 生成整页图；
+* 不要改变循环分页的 content origin 计算；
+* 不要改 `setPage(...)` 的 recenter 机制。
 
-    LumaEventLog.shared.writeInteraction(
-        .drag,
-        "manualEdit.commit",
-        fields: [
-            "tileOrderCount": tileOrder.count
-        ]
-    )
+---
 
-    onChange?(.editing)
-}
+## 二、修拖拽松手灰色卡顿
 
-func cancelManualEditing() {
-    guard reorderSessionKind == .manualEdit else { return }
+### 当前问题
 
-    if let original = manualEditOriginalTileOrder {
-        tileOrder = original
-    }
+拖拽 drop 路径和 drag end 路径会同步 `refreshEdgeReplicas()`。即使本轮改成轻量副本页，也不应该在松手路径同步做刷新。
 
-    reorderSessionKind = .none
-    manualEditOriginalTileOrder = nil
-    draggedTileID = nil
-    isEditing = false
+另外，`LauncherTileView.draggingSession(_:endedAt:operation:)` 当前是在 delegate 处理之后才恢复外观，导致 delegate 中有重活时，图标保持灰色 alpha。
 
-    LumaEventLog.shared.writeInteraction(
-        .drag,
-        "manualEdit.cancel",
-        fields: [
-            "tileOrderCount": tileOrder.count
-        ]
-    )
+### A. 先恢复视觉，再调用 delegate
 
-    onChange?(.content(animated: false))
-    onChange?(.editing)
-}
+把 `LauncherTileView.draggingSession(_:endedAt:operation:)` 改成：
 
-修改 toggleEditing：
+```swift
+func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+    isDraggingTile = false
+    mouseDownEvent = nil
 
-func toggleEditing() {
-    if reorderSessionKind == .manualEdit {
-        commitManualEditing()
-    } else {
-        beginManualEditing()
-    }
-}
-
-顶部按钮显示：
-- 非 manualEdit：显示整理/编辑图标；
-- manualEdit：显示 checkmark，对应“完成排序”；
-- 点击 checkmark 提交保存。
-
-五、默认长按拖动排序直接提交
-
-当前 beginDraggingTile 只有一个入口，容易把普通长按拖拽和手动编辑模式混在一起。需要新增参数：
-
-func beginDraggingTile(_ tileID: String, kind: ReorderSessionKind)
-
-或者：
-
-func beginDraggingTile(_ tileID: String, commitPolicy: DragCommitPolicy)
-
-推荐：
-
-enum DragCommitPolicy {
-    case autoCommit
-    case manualCommit
-}
-
-新增状态：
-
-private var activeDragCommitPolicy: DragCommitPolicy = .autoCommit
-
-修改 beginDraggingTile：
-
-func beginDraggingTile(_ tileID: String, commitPolicy: DragCommitPolicy) {
-    if sortMode != .custom {
-        tileOrder = orderedTiles().map(\.id)
-        sortMode = .custom
-    }
-
-    tileOrderBeforeDrag = tileOrder
-    dragPreviewChanged = false
-    draggedTileID = tileID
-    currentDragID = UUID().uuidString
-    activeDragCommitPolicy = commitPolicy
-
-    switch commitPolicy {
-    case .autoCommit:
-        reorderSessionKind = .quickDrag
-        // 快速拖拽可以临时设置 isEditing = true 以复用拖拽 UI，
-        // 但拖拽结束后必须自动退出。
-        isEditing = true
-
-    case .manualCommit:
-        reorderSessionKind = .manualEdit
-        isEditing = true
-    }
+    // 先恢复视觉，避免 delegate 中的刷新阻塞导致图标灰色停留。
+    updateAppearance(animated: false)
 
     LumaEventLog.shared.writeInteraction(
         .drag,
-        "drag.begin",
+        "tile.draggingSessionEnded",
         fields: [
-            "dragID": currentDragID ?? "nil",
-            "tileID": tileID,
-            "commitPolicy": commitPolicy == .autoCommit ? "autoCommit" : "manualCommit",
-            "sessionKind": "\(reorderSessionKind)"
+            "tileID": tile.id,
+            "screenPoint": lumaLogPoint(screenPoint),
+            "operation": operation.rawValue
         ]
     )
 
-    onChange?(.editing)
+    delegate?.tileViewDidEndDragging(self, operation: operation)
 }
-
-六、Tile/Pager 根据是否手动编辑决定 commit policy
-
-在 LauncherTileView.mouseDragged 或 LauncherPagerView.tileViewDidBeginDragging 中判断当前是否是手动编辑模式。
-
-建议在 Store 增加只读属性：
-
-var isInManualEditMode: Bool {
-    reorderSessionKind == .manualEdit
-}
-
-在 Pager：
-
-func tileViewDidBeginDragging(_ view: LauncherTileView) {
-    currentDragCommitted = false
-    setPageRasterizationEnabled(false)
-
-    let policy: DragCommitPolicy = store.isInManualEditMode ? .manualCommit : .autoCommit
-
-    LumaEventLog.shared.writeInteraction(
-        .drag,
-        "tile.drag.begin",
-        fields: [
-            "tileID": view.tileID,
-            "commitPolicy": policy == .autoCommit ? "autoCommit" : "manualCommit"
-        ]
-    )
-
-    store.beginDraggingTile(view.tileID, commitPolicy: policy)
-}
-
-七、修改 endDraggingTile 规则
-
-当前 endDraggingTile(commit:) 里 commit=false 会恢复旧 tileOrder。现在要区分 autoCommit 和 manualCommit。
-
-建议：
-
-func endDraggingTile(commit: Bool) {
-    let dragID = currentDragID
-    let policy = activeDragCommitPolicy
-    let previewChanged = dragPreviewChanged
-
-    switch policy {
-    case .autoCommit:
-        if commit, dragPreviewChanged {
-            savePreferences()
-        } else if !commit, let tileOrderBeforeDrag {
-            tileOrder = tileOrderBeforeDrag
-            onChange?(.content(animated: false))
-        }
-
-        // 快速拖拽结束后退出临时编辑状态
-        reorderSessionKind = .none
-        isEditing = false
-
-    case .manualCommit:
-        // 手动编辑模式下，拖拽结束只结束当前 drag，不保存，也不退出编辑。
-        // 保存由 commitManualEditing 负责。
-        // 取消整个 manual edit 才恢复 manualEditOriginalTileOrder。
-        if !commit, let tileOrderBeforeDrag {
-            // 单次拖拽取消，只回滚本次拖拽前状态，但仍留在 manual edit。
-            tileOrder = tileOrderBeforeDrag
-            onChange?(.content(animated: false))
-        }
-
-        reorderSessionKind = .manualEdit
-        isEditing = true
-    }
-
-    tileOrderBeforeDrag = nil
-    dragPreviewChanged = false
-    draggedTileID = nil
-    currentDragID = nil
-    activeDragCommitPolicy = .autoCommit
-
-    LumaEventLog.shared.writeInteraction(
-        .drag,
-        "drag.end",
-        fields: [
-            "dragID": dragID ?? "nil",
-            "commit": commit,
-            "previewChanged": previewChanged,
-            "commitPolicy": policy == .autoCommit ? "autoCommit" : "manualCommit",
-            "sessionKind": "\(reorderSessionKind)"
-        ]
-    )
-
-    onChange?(.editing)
-}
+```
 
 要求：
-- 默认长按拖动：commit=true 后立即保存，拖拽结束后退出临时编辑；
-- 手动编辑模式拖动：commit=true 后只保留内存排序，不保存；点击 checkmark 才保存；
-- 手动编辑模式下，拖完一个 App 后仍然保持抖动编辑状态；
-- 默认长按拖动结束后，不应继续留在编辑抖动状态。
 
-八、修改拖拽结束判断
+* `updateAppearance(animated: false)` 必须在 `delegate?.tileViewDidEndDragging(...)` 之前；
+* 不要用 `animated: true`；
+* 不要改变排序提交逻辑。
 
-继续保留上一版建议：LauncherTileViewDelegate 需要传递 operation。
+---
 
-协议：
+### B. performDragOperation defer 只保留状态
 
-func tileViewDidEndDragging(_ view: LauncherTileView, operation: NSDragOperation)
+把 `LauncherPagerView.performDragOperation` 的 defer 改成：
 
-在 LauncherTileView.draggingSession endedAt 中：
-
-delegate?.tileViewDidEndDragging(self, operation: operation)
-
-在 Pager：
-
-func tileViewDidEndDragging(_ view: LauncherTileView, operation: NSDragOperation) {
+```swift
+defer {
+    currentDragCommitted = didCommitDrop
     dropTargetID = nil
-    let dragID = store.currentDragID
+}
+```
 
-    let shouldCommit =
-        currentDragCommitted
-        || (operation.contains(.move) && store.hasPendingDragPreview)
+不要在这里调用：
 
-    store.endDraggingTile(commit: shouldCommit)
+```swift
+setPageRasterizationEnabled(true)
+refreshEdgeReplicas()
+scheduleEdgeReplicaRefresh(...)
+```
 
-    LumaEventLog.shared.writeInteraction(
-        .drag,
-        "tile.drag.end",
-        fields: [
-            "tileID": view.tileID,
-            "dragID": dragID ?? "nil",
-            "operation": operation.rawValue,
-            "committed": shouldCommit,
-            "currentDragCommitted": currentDragCommitted,
-            "hasPendingDragPreview": store.hasPendingDragPreview,
-            "isManualEditMode": store.isInManualEditMode
-        ]
+---
+
+### C. tileView(_:performDropWith:) defer 只保留状态
+
+把 `LauncherPagerView.tileView(_:performDropWith:)` 的 defer 改成：
+
+```swift
+defer {
+    currentDragCommitted = didCommitDrop
+    dropTargetID = nil
+}
+```
+
+不要在这里调用：
+
+```swift
+setPageRasterizationEnabled(true)
+refreshEdgeReplicas()
+scheduleEdgeReplicaRefresh(...)
+```
+
+---
+
+### D. tileViewDidEndDragging 末尾延迟刷新
+
+保留现有提交判断：
+
+```swift
+let shouldCommit =
+    currentDragCommitted || hasPendingDragPreview
+```
+
+调用：
+
+```swift
+store.endDraggingTile(commit: shouldCommit)
+```
+
+之后末尾改成：
+
+```swift
+currentDragCommitted = false
+setPageRasterizationEnabled(true)
+
+if shouldCommit {
+    scheduleEdgeReplicaRefresh(after: 0.25)
+}
+```
+
+不要同步调用：
+
+```swift
+refreshEdgeReplicas()
+```
+
+说明：
+
+* 排序取消时可以不刷新副本页；
+* 排序提交后延迟刷新一次轻量副本页；
+* `scheduleEdgeReplicaRefresh` 内部必须保留 cancel 合并逻辑。
+
+---
+
+### E. tile.drag.end 日志补充字段
+
+在 `tile.drag.end` 日志 fields 中加入：
+
+```swift
+"replicaRefresh": shouldCommit ? "scheduled" : "skipped"
+```
+
+---
+
+## 三、修点击空白处不退出
+
+### 当前问题
+
+`LauncherRootView.hitTest` 在 Pager 空白处返回 nil，导致 `LauncherRootView.mouseDown` 收不到事件。即使收到，`mouseDown` 里也会因为 `pager.frame.contains(layoutPoint)` 直接 return。
+
+### 目标
+
+* 点击 Tile：打开或拖动 Tile；
+* 点击 Header 控件：正常响应；
+* 点击搜索框：聚焦搜索；
+* 点击 Pager 空白：关闭 Launcher；
+* 点击根背景空白：关闭 Launcher；
+* FolderOverlay 仍交给 overlay 处理。
+
+---
+
+### A. 修改 LauncherRootView.hitTest 的 Pager 分支
+
+当前大致是：
+
+```swift
+if pager.frame.contains(layoutPoint) {
+    let pagerPoint = ...
+    let result = pager.hitTest(pagerPoint)
+    ...
+    return result
+}
+```
+
+改成：
+
+```swift
+if pager.frame.contains(layoutPoint) {
+    let pagerPoint = NSPoint(
+        x: layoutPoint.x - pager.frame.minX,
+        y: layoutPoint.y - pager.frame.minY
     )
 
-    currentDragCommitted = false
-    setPageRasterizationEnabled(true)
-    refreshEdgeReplicas()
-}
-
-九、默认显示可见应用，而不是全部应用
-
-确认并强化默认值：
-
-1. LauncherStore 默认值：
-private(set) var appFilterMode: AppFilterMode = .visibleOnly
-
-2. LauncherPreferences 默认值：
-appFilterMode 应为 .visibleOnly。
-
-3. 如果没有本地 preferences，默认 visibleOnly。
-
-4. 如果读取旧 preferences 没有 appFilterMode 字段，默认 visibleOnly。
-
-5. 不要因为隐藏 App、Rescan、Layout 切换、重新打开 Launcher 而自动切到 .all。
-
-6. 如果用户明确选择 All Apps，可以保留该选择；但“初始默认”和“隐藏后默认视图”必须是 visibleOnly。
-
-隐藏 App 后如果当前是 .all，仍建议自动切回 .visibleOnly，避免用户觉得隐藏失效。
-
-十、切换可见/隐藏显示模式时动画到第一页
-
-当前 setAppFilterMode 直接 pageIndex=0 并 content reload，视觉上可能不是“切换到第一页”，而是直接刷新。
-
-新增 StoreChange：
-
-case filterModeChanged(previousPageIndex: Int)
-
-修改 setAppFilterMode：
-
-func setAppFilterMode(_ mode: AppFilterMode) {
-    guard appFilterMode != mode else { return }
-
-    let previousPageIndex = pageIndex
-    appFilterMode = mode
-    pageIndex = 0
-    pageDragRawOffset = 0
-    pageDragOffset = 0
-
-    savePreferences()
-
-    LumaEventLog.shared.writeInteraction(
-        .page,
-        "filterMode.changed",
-        fields: [
-            "mode": mode.rawValue,
-            "previousPageIndex": previousPageIndex,
-            "targetPageIndex": 0
-        ]
-    )
-
-    onChange?(.filterModeChanged(previousPageIndex: previousPageIndex))
-}
-
-RootView.handleStoreChange 增加：
-
-case let .filterModeChanged(previousPageIndex):
-    pager.reloadForFilterModeChange(from: previousPageIndex, to: 0)
-    updatePageDots()
-    updateHeader()
-    updateStatus()
-
-Pager 增加：
-
-func reloadForFilterModeChange(from previousPageIndex: Int, to targetPageIndex: Int) {
-    replicaRefreshWorkItem?.cancel()
-    replicaRefreshWorkItem = nil
-
-    performReload(animated: false, refreshReplicas: false, retargetRunningAnimations: false)
-
-    let startPage = min(max(0, previousPageIndex), max(0, renderedPageCount - 1))
-    let startOrigin = NSPoint(x: -CGFloat(startPage + 1) * bounds.width, y: 0)
-    contentView.setFrameOrigin(startOrigin)
-
-    if startPage != targetPageIndex, renderedPageCount > 1 {
-        setPage(
-            index: targetPageIndex,
-            dragOffset: 0,
-            animated: true,
-            previousIndex: startPage,
-            previousOffset: 0
+    if let result = pager.hitTest(pagerPoint) {
+        logRootHitTest(
+            rawPoint: point,
+            layoutPoint: layoutPoint,
+            result: "pager",
+            detail: String(reflecting: type(of: result))
         )
-    } else {
-        setPage(index: targetPageIndex, dragOffset: 0, animated: false)
+        return result
     }
 
-    scheduleEdgeReplicaRefresh(after: 0.35)
+    logRootHitTest(
+        rawPoint: point,
+        layoutPoint: layoutPoint,
+        result: "pager.blank",
+        detail: "closeTarget"
+    )
+    return self
 }
+```
 
-要求：
-- 如果当前已经在第一页，直接刷新即可；
-- 如果当前不在第一页，视觉上从当前页滑动到第一页；
-- 切换 Visible / All / Hidden 都使用这条路径；
-- 切换后 pageDots 更新为第一页。
+---
 
-十一、创建文件夹后动画切换到文件夹所在页
+### B. 修改 LauncherRootView.hitTest 最后的 outside 分支
 
-当前 createFolder 只是追加 folder 并刷新内容。需要在创建后定位到该 folder tile 所在页，并动画切过去。
+当前：
 
-新增 StoreChange：
+```swift
+logRootHitTest(rawPoint: point, layoutPoint: layoutPoint, result: "outside")
+return nil
+```
 
-case folderCreated(folderID: String, previousPageIndex: Int, targetPageIndex: Int)
+改成：
 
-修改 createFolder：
+```swift
+logRootHitTest(rawPoint: point, layoutPoint: layoutPoint, result: "outside.closeTarget")
+return self
+```
 
-@discardableResult
-func createFolder(named name: String? = nil, containing itemIDs: [String] = []) -> LauncherFolder {
-    let previousPageIndex = pageIndex
+---
 
-    let validItemIDs = itemIDs.filter { app(withID: $0) != nil }
-    let folder = LauncherFolder(
-        id: UUID().uuidString,
-        name: uniqueFolderName(name?.trimmedNonEmpty ?? L10n.text(.newFolder)),
-        itemIDs: validItemIDs
+### C. 修改 LauncherRootView.mouseDown
+
+当前 Pager 分支大致是：
+
+```swift
+if pager.frame.contains(layoutPoint) {
+    return
+}
+```
+
+改成：
+
+```swift
+if pager.frame.contains(layoutPoint) {
+    let pagerPoint = NSPoint(
+        x: layoutPoint.x - pager.frame.minX,
+        y: layoutPoint.y - pager.frame.minY
     )
 
-    removeAppsFromFolders(validItemIDs)
-    folders.append(folder)
-    tileOrder.removeAll { validItemIDs.contains($0) }
-    tileOrder.append(folder.tileID)
-
-    reconcileAfterAppScan()
-
-    let targetIndex = visibleTiles.firstIndex(where: { $0.id == folder.tileID }) ?? max(0, visibleTiles.count - 1)
-    let targetPageIndex = targetIndex / max(1, gridLayout.itemsPerPage)
-
-    pageIndex = targetPageIndex
-    savePreferences()
-
-    LumaEventLog.shared.writeInteraction(
-        .folder,
-        "folder.created",
-        fields: [
-            "folderID": folder.id,
-            "folderTileID": folder.tileID,
-            "previousPageIndex": previousPageIndex,
-            "targetPageIndex": targetPageIndex,
-            "itemCount": validItemIDs.count
-        ]
-    )
-
-    onChange?(
-        .folderCreated(
-            folderID: folder.id,
-            previousPageIndex: previousPageIndex,
-            targetPageIndex: targetPageIndex
-        )
-    )
-
-    return folder
-}
-
-RootView.handleStoreChange：
-
-case let .folderCreated(_, previousPageIndex, targetPageIndex):
-    pager.reloadForFolderCreation(from: previousPageIndex, to: targetPageIndex)
-    updatePageDots()
-    updateHeader()
-    updateStatus()
-
-Pager 增加：
-
-func reloadForFolderCreation(from previousPageIndex: Int, to targetPageIndex: Int) {
-    replicaRefreshWorkItem?.cancel()
-    replicaRefreshWorkItem = nil
-
-    performReload(animated: false, refreshReplicas: false, retargetRunningAnimations: false)
-
-    let startPage = min(max(0, previousPageIndex), max(0, renderedPageCount - 1))
-    let targetPage = min(max(0, targetPageIndex), max(0, renderedPageCount - 1))
-
-    contentView.setFrameOrigin(NSPoint(x: -CGFloat(startPage + 1) * bounds.width, y: 0))
-
-    if startPage != targetPage {
-        setPage(
-            index: targetPage,
-            dragOffset: 0,
-            animated: true,
-            previousIndex: startPage,
-            previousOffset: 0
-        )
-    } else {
-        setPage(index: targetPage, dragOffset: 0, animated: false)
+    if pager.hitTest(pagerPoint) == nil {
+        onClose("pagerBlankClick")
     }
 
-    scheduleEdgeReplicaRefresh(after: 0.35)
+    return
 }
+```
 
-要求：
-- 点击顶部新建文件夹后，自动切到新文件夹所在页；
-- App-to-App 创建文件夹后，也自动切到新文件夹所在页；
-- 如果新文件夹就在当前页，不做多余滑动；
-- pageDots 同步更新；
-- 不要打开文件夹 overlay，除非现有产品已有这个行为，本轮只要求切页。
+---
 
-十二、编辑态改成 iOS 风格抖动，不要显示右上角拖动图标
+### D. Header 区域暂时保持不关闭
 
-当前 LauncherTileView 有 editBadge，右上角显示 line.3.horizontal 图标。这个视觉很差，改为 iOS / Launchpad 风格抖动。
+Header 背景点击可以先不关闭，避免误触。不要改 Header 控件逻辑。
 
-要求：
-1. 进入 manual edit mode 后，所有可见 App / Folder 图标轻微抖动；
-2. 不显示右上角 editBadge；
-3. 拖动时，被拖动的 Tile 暂停抖动或降低透明度；
-4. 退出编辑后停止所有动画；
-5. 尊重 Reduce Motion，如果系统开启减少动态效果，则不抖动，只显示轻微高亮或缩放；
-6. 抖动只在 manual edit mode 下持续显示；
-7. 默认快速长按拖动时，可以短暂进入拖拽状态，但拖拽结束后不要长期抖动。
+---
 
-十三、删除或隐藏 editBadge
+### E. FolderOverlay 逻辑不要动
 
-在 LauncherTileView 中：
+如果 `folderOverlay` 存在并命中 overlay，仍然交给 overlay。不要破坏文件夹浮层。
 
-- 保留 editBadge 属性也可以，但默认永远隐藏；
-- 更推荐移除 editBadge 的图标设置和 layout；
-- 不要再显示右上角 line.3.horizontal；
-- 如果后续需要删除按钮，可以单独设计 iOS 风格左上角 minus，不在本轮做。
+---
 
-修改：
+## 四、最小日志降噪
 
-editBadge.isHidden = true
+当前 hitTest 日志过密。只做最小降噪，不要重构日志系统。
 
-或者彻底删除：
-- private let editBadge = NSImageView()
-- addSubview(editBadge)
-- editBadge layout
-- editBadge image 配置
+### A. hitTestTile 命中日志必须 throttle
 
-短期稳妥：保留属性但隐藏，不影响编译范围。
+找到 `hitTestTile` 中类似：
 
-十四、实现 wiggle 动画
-
-在 LauncherTileView 中新增：
-
-private func updateWiggleAnimation() {
-    if shouldReduceMotion {
-        layer?.removeAnimation(forKey: "luma.wiggle.rotation")
-        layer?.removeAnimation(forKey: "luma.wiggle.position")
-        return
-    }
-
-    if isEditing && !isDraggingTile {
-        startWiggleIfNeeded()
-    } else {
-        stopWiggle()
-    }
-}
-
-private var shouldReduceMotion: Bool {
-    NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-}
-
-private func startWiggleIfNeeded() {
-    wantsLayer = true
-    guard layer?.animation(forKey: "luma.wiggle.rotation") == nil else {
-        return
-    }
-
-    let seed = abs(tileID.hashValue)
-    let phase = CFTimeInterval(seed % 100) / 100.0 * 0.12
-    let angle = CGFloat(0.018 + Double(seed % 6) / 1000.0)
-
-    let rotation = CAKeyframeAnimation(keyPath: "transform.rotation.z")
-    rotation.values = [-angle, angle, -angle * 0.7]
-    rotation.duration = 0.18
-    rotation.beginTime = CACurrentMediaTime() + phase
-    rotation.repeatCount = .infinity
-    rotation.isRemovedOnCompletion = false
-    rotation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-
-    let translation = CAKeyframeAnimation(keyPath: "transform.translation.y")
-    translation.values = [0, -1.0, 0.6, 0]
-    translation.duration = 0.24
-    translation.beginTime = CACurrentMediaTime() + phase / 2
-    translation.repeatCount = .infinity
-    translation.isRemovedOnCompletion = false
-    translation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-
-    layer?.add(rotation, forKey: "luma.wiggle.rotation")
-    layer?.add(translation, forKey: "luma.wiggle.position")
-}
-
-private func stopWiggle() {
-    layer?.removeAnimation(forKey: "luma.wiggle.rotation")
-    layer?.removeAnimation(forKey: "luma.wiggle.position")
-    layer?.transform = CATransform3DIdentity
-}
-
-在以下位置调用：
-- update(tile:metrics:isEditing:) 后；
-- setEditing(_:dragged:) 后；
-- mouseDragged 开始拖拽后；
-- draggingSession endedAt 后；
-- updateAppearance(animated:) 之后不要覆盖 wiggle 动画。
-
-十五、区分 manual edit 抖动和 quick drag
-
-现在 TileView 只知道 isEditing，可能无法区分是 manual edit 还是 quick drag。需要传入更清晰状态。
-
-方案 A：
-让 LauncherStore 增加：
-
-var shouldShowJiggle: Bool {
-    reorderSessionKind == .manualEdit
-}
-
-Pager.updateEditingState：
-
-view.setEditing(
-    store.shouldShowJiggle,
-    dragged: store.draggedTileID == view.tileID
+```swift
+LumaEventLog.shared.writeInteraction(
+    .hitTest,
+    "pager.tileHit.hit",
+    ...
 )
+```
 
-TileView.setEditing 的 editing 参数改成 “showJiggle”。
+改成带 throttle：
 
-方案 B：
-保留 isEditing 但增加 isManualEditing 参数。
-
-推荐方案 A，更少改动。
-
-要求：
-- toolbar 手动编辑：showJiggle=true；
-- quick drag：showJiggle=false，或者只在拖拽中的 tile 改外观；
-- quick drag 结束后所有图标不抖动；
-- manual edit 下拖完一个 App 后仍然继续抖动，直到点 checkmark。
-
-十六、Header 编辑按钮文案和图标
-
-当前 editButton 使用 slider.horizontal.3，manual edit 下变成 checkmark。可以保留，但建议更清晰：
-
-非编辑态：
-- symbol: "square.grid.3x3"
-- tooltip: L10n.text(.editTooltip) 或新增 L10n.text(.organizeApps)
-- 无文字，仅图标
-
-手动编辑态：
-- symbol: "checkmark"
-- tooltip: L10n.text(.doneEditingTooltip) 或 “完成排序”
-
-L10n 可新增：
-- organizeApps: 中文“整理应用”，英文“Organize Apps”
-- doneSorting: 中文“完成排序”，英文“Done Sorting”
-
-十七、筛选模式动画切第一页验收
-
-实际验收：
-1. 切到第 2 页或第 3 页；
-2. 点击 Filter -> 已隐藏应用；
-3. 应看到页面动画回到第一页；
-4. pageDots 当前页变成 0；
-5. 切回 可见应用 / 全部应用 也同样从当前页动画回第一页；
-6. 如果本来就在第一页，不做多余动画。
-
-日志应出现：
-
-filterMode.changed previousPageIndex=2 targetPageIndex=0
-pager.reloadForFilterModeChange from=2 to=0
-pager.setPage animated=true pageIndex=0
-
-十八、创建文件夹切页验收
-
-实际验收：
-1. 当前在第一页；
-2. 顶部点击新建文件夹；
-3. 如果新文件夹被添加到最后一页，应动画切到最后一页；
-4. pageDots 对应最后一页；
-5. App-to-App 创建文件夹也应切到新文件夹所在页；
-6. 不应卡顿，不应错误打开 folder overlay。
-
-日志应出现：
-
-folder.created previousPageIndex=0 targetPageIndex=N
-pager.reloadForFolderCreation from=0 to=N
-pager.setPage animated=true pageIndex=N
-
-十九、排序提交验收
-
-默认快速拖拽：
-1. 不点击顶部编辑按钮；
-2. 长按 App 并拖动排序；
-3. 松开鼠标；
-4. 顺序立即保持；
-5. 关闭再打开仍保持；
-6. 不需要点击对钩。
-
-日志应出现：
-
-drag.begin commitPolicy=autoCommit
-drag.previewMove
-tile.draggingSessionEnded operation=move
-drag.end commit=true commitPolicy=autoCommit
-manualEdit 不应出现
-
-手动整理模式：
-1. 点击顶部编辑/排序按钮；
-2. 图标开始抖动；
-3. 拖动多个 App；
-4. 松手后顺序暂时保持；
-5. 不退出抖动；
-6. 点击对钩；
-7. 保存排序并退出抖动；
-8. 关闭再打开仍保持。
-
-日志应出现：
-
-manualEdit.begin
-drag.begin commitPolicy=manualCommit
-drag.previewMove
-drag.end commit=true commitPolicy=manualCommit
-manualEdit.commit
-
-取消场景：
-1. 进入手动整理模式；
-2. 拖动排序；
-3. 按 ESC 或关闭 Launcher；
-4. 如果产品定义为取消，则恢复进入编辑前顺序；
-5. 日志 manualEdit.cancel。
-
-二十、Layout 卡顿优化继续保留
-
-上一版关于 layoutChanged / reloadForLayoutChange / 延迟 refreshEdgeReplicas 的要求继续保留。不要因为新增 filter/folder 动画又回到 .content(animated: true)。
-
-新增 StoreChange 后建议最终包含：
-
-enum LauncherStoreChange {
-    case content(animated: Bool)
-    case state
-    case search
-    case pageDrag
-    case pageSettled(previousIndex: Int, previousOffset: CGFloat)
-    case editing
-    case presentation
-    case dragPreview
-    case layoutChanged
-    case filterModeChanged(previousPageIndex: Int)
-    case folderCreated(folderID: String, previousPageIndex: Int, targetPageIndex: Int)
+```swift
+if interactionLogThrottle.shouldLog("pager.tileHit.hit.\(tileView.tileID)", interval: 0.30) {
+    LumaEventLog.shared.writeInteraction(
+        .hitTest,
+        "pager.tileHit.hit",
+        fields: [
+            "tileID": tileView.tileID,
+            "pagerPoint": lumaLogPoint(pagerPoint),
+            "tileFrame": lumaLogRect(tileView.frame),
+            "pageIndex": store.pageIndex
+        ]
+    )
 }
+```
 
-二十一、测试要求
+注意：
 
-新增/修改测试：
+* 不要删除 hitTest 日志；
+* 只降低高频重复命中；
+* 不要影响 drag target 日志。
 
-1. Quick drag auto commit
-- 默认非 manual edit；
-- beginDraggingTile(appA, commitPolicy: .autoCommit)
-- previewMoveTile(appA, before: appC)
-- endDraggingTile(commit: true)
-- tileOrder 保持新顺序；
-- preferences 保存；
-- isEditing=false；
-- reorderSessionKind=.none。
+### B. 必须保留这些关键拖拽日志
 
-2. Manual edit requires checkmark
-- beginManualEditing()
-- beginDraggingTile(appA, commitPolicy: .manualCommit)
-- previewMoveTile(appA, before: appC)
-- endDraggingTile(commit: true)
-- tileOrder 内存保持新顺序；
-- preferences 未保存；
-- isEditing=true；
-- commitManualEditing()
-- preferences 保存；
-- isEditing=false。
+不要删除：
 
-3. Manual edit cancel
-- beginManualEditing()
-- previewMoveTile
-- cancelManualEditing()
-- tileOrder 恢复原始顺序。
+```text
+tile.mouseDragged.beginSession
+tile.drag.begin
+drag.begin
+drag.targetChanged
+drag.previewMove
+tile.drag.end
+drag.end
+pager.refreshEdgeReplicaPages
+```
 
-4. Filter mode page reset animation
-- pageIndex=2；
-- setAppFilterMode(.hiddenOnly)
-- StoreChange 为 .filterModeChanged(previousPageIndex: 2)
-- pageIndex=0。
+---
 
-5. Folder created target page
-- 使用足够多 App 让 folder 出现在第 2/3 页；
-- createFolder()
-- StoreChange 为 .folderCreated；
-- pageIndex == folder 所在页。
+## 五、保持不变的逻辑
 
-6. Jiggle mode
-- manual edit 下 TileView 应有 wiggle animation key；
-- quick drag 结束后不应有 wiggle；
-- Reduce Motion 下不添加 wiggle 动画。
+本轮禁止修改这些逻辑：
 
-7. Header button
-- manual edit 下 editButton 图标为 checkmark；
-- 退出后恢复普通整理图标；
-- tooltip 中文为“整理应用 / 完成排序”。
+```swift
+shouldCommit = currentDragCommitted || hasPendingDragPreview
+```
 
-二十二、不要做的事
+禁止修改：
 
-- 不要把默认 quick drag 做成必须点 checkmark；
-- 不要让普通长按拖拽结束后还留在抖动编辑态；
-- 不要让 manual edit 的拖动每次都立即保存；
-- 不要在 filter 切换时直接无动画刷新到第一页；
-- 不要创建文件夹后仍停留在原页面；
-- 不要继续显示右上角 line.3.horizontal editBadge；
-- 不要用大量 view 重建实现抖动；
-- 不要在所有 App 上同时做重型动画，wiggle 应该是轻量 CAAnimation；
-- 不要回退到 .content(animated: true) 处理布局切换；
-- 不要再改已稳定的 hitTest 坐标逻辑。
+* `beginDraggingTile`
+* `endDraggingTile`
+* `previewMoveTile`
+* Option + app-to-app 才创建文件夹
+* app -> folder 添加到已有文件夹
+* Layout transition 的 `CATransition + scale`
+* HeaderButton 左对齐布局
+* AppIcon 打包脚本
+* `setPage(...)` 的 recenter 机制
+
+---
+
+## 六、自检命令
+
+修改后执行：
+
+```bash
+grep -n "snapshot(of" Sources/MacOSLauncher/Features/Launcher/UI/LauncherViews.swift
+```
+
+应无结果。
+
+执行：
+
+```bash
+grep -n "bitmapImageRepForCachingDisplay\\|cacheDisplay(in:" Sources/MacOSLauncher/Features/Launcher/UI/LauncherViews.swift
+```
+
+允许只出现在 `LauncherTileView.dragPreviewImage` 附近；
+不允许出现在 edge replica / `refreshEdgeReplicas` 相关代码中。
+
+执行：
+
+```bash
+grep -n "leadingReplica.image\\|trailingReplica.image" Sources/MacOSLauncher/Features/Launcher/UI/LauncherViews.swift
+```
+
+应无结果。
+
+执行：
+
+```bash
+grep -n "LauncherReplicaPageView\\|LauncherReplicaTileView\\|refreshEdgeReplicaPages" Sources/MacOSLauncher/Features/Launcher/UI/LauncherViews.swift
+```
+
+应能看到新增轻量副本页和日志。
+
+执行：
+
+```bash
+grep -n "performDragOperation" -A 30 Sources/MacOSLauncher/Features/Launcher/UI/LauncherViews.swift
+```
+
+确认 `performDragOperation` 的 defer 中没有：
+
+```swift
+refreshEdgeReplicas()
+setPageRasterizationEnabled(true)
+scheduleEdgeReplicaRefresh
+```
+
+执行：
+
+```bash
+grep -n "performDropWith" -A 35 Sources/MacOSLauncher/Features/Launcher/UI/LauncherViews.swift
+```
+
+确认 `performDropWith` 的 defer 中没有：
+
+```swift
+refreshEdgeReplicas()
+setPageRasterizationEnabled(true)
+scheduleEdgeReplicaRefresh
+```
+
+执行：
+
+```bash
+grep -n "tileViewDidEndDragging" -A 45 Sources/MacOSLauncher/Features/Launcher/UI/LauncherViews.swift
+```
+
+确认里面是：
+
+```swift
+setPageRasterizationEnabled(true)
+if shouldCommit {
+    scheduleEdgeReplicaRefresh(after: 0.25)
+}
+```
+
+而不是：
+
+```swift
+refreshEdgeReplicas()
+```
+
+执行：
+
+```bash
+grep -n "pager.blank\\|outside.closeTarget\\|pagerBlankClick" Sources/MacOSLauncher/Features/Launcher/UI/LauncherViews.swift
+```
+
+应能看到空白点击关闭逻辑。
+
+最后运行：
+
+```bash
+swift build
+```
+
+不要运行：
+
+```bash
+swift test
+```
+
+---
+
+## 七、手动验收
+
+构建安装后手动验证：
+
+1. 打开 Launcher 后左右分页仍然能循环；
+2. 从第一页往左滑，能看到最后一页副本；
+3. 从最后一页往右滑，能看到第一页副本；
+4. 滑到副本页后，动画结束应无感 recenter 到真实正式页；
+5. 副本页不能点击、不能拖拽、不能右键；
+6. 拖动排序松手后，图标不再灰色停留；
+7. 拖动排序仍然保存；
+8. 排序后再循环分页，首尾副本页显示的是新顺序；
+9. 点击 Pager 空白区域会关闭 Launcher；
+10. 点击背景空白区域会关闭 Launcher；
+11. 点击 Tile 不受影响；
+12. 点击 Header 按钮和搜索框不受影响；
+13. 行列切换 transition 不受影响；
+14. Header 按钮左对齐不受影响。
+
+---
+
+## 八、完成后报告
+
+只报告：
+
+1. 修改了哪些文件；
+2. 是否已用轻量副本页替代整页快照；
+3. 是否已删除 edge replica 的 bitmap snapshot；
+4. 是否已保持首尾循环分页 recenter 机制；
+5. 是否已把拖拽结束同步刷新改为延迟 schedule；
+6. 是否已让图标恢复提前到 delegate 之前；
+7. 是否已修复 pager blank / outside blank 点击关闭；
+8. swift build 是否通过；
+9. 明确说明没有修改 Tests、没有运行 swift test。
+

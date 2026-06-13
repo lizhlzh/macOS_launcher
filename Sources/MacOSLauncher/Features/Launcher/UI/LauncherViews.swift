@@ -153,6 +153,15 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         }
 
         if pager.frame.contains(layoutPoint) {
+            let pagerPoint = NSPoint(
+                x: layoutPoint.x - pager.frame.minX,
+                y: layoutPoint.y - pager.frame.minY
+            )
+
+            if pager.hitTest(pagerPoint) == nil {
+                onClose("pagerBlankClick")
+            }
+
             return
         }
 
@@ -235,18 +244,27 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
                 x: layoutPoint.x - pager.frame.minX,
                 y: layoutPoint.y - pager.frame.minY
             )
-            let result = pager.hitTest(pagerPoint)
+            if let result = pager.hitTest(pagerPoint) {
+                logRootHitTest(
+                    rawPoint: point,
+                    layoutPoint: layoutPoint,
+                    result: "pager",
+                    detail: String(reflecting: type(of: result))
+                )
+                return result
+            }
+
             logRootHitTest(
                 rawPoint: point,
                 layoutPoint: layoutPoint,
-                result: result == nil ? "pager.nil" : "pager",
-                detail: result.map { String(reflecting: type(of: $0)) }
+                result: "pager.blank",
+                detail: "closeTarget"
             )
-            return result
+            return self
         }
 
-        logRootHitTest(rawPoint: point, layoutPoint: layoutPoint, result: "outside")
-        return nil
+        logRootHitTest(rawPoint: point, layoutPoint: layoutPoint, result: "outside.closeTarget")
+        return self
     }
 
     override func keyDown(with event: NSEvent) {
@@ -922,6 +940,138 @@ extension LauncherRootView: LauncherPagerDelegate {
     }
 }
 
+@MainActor
+private final class LauncherReplicaPageView: NSView {
+    override var isFlipped: Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    func render(
+        items: [(tile: LauncherTile, frame: NSRect)],
+        store: LauncherStore,
+        metrics: LauncherGridMetrics
+    ) {
+        subviews.forEach { $0.removeFromSuperview() }
+
+        for item in items {
+            let tileView = LauncherReplicaTileView(
+                tile: item.tile,
+                store: store,
+                metrics: metrics
+            )
+            tileView.frame = item.frame
+            addSubview(tileView)
+        }
+    }
+
+    func clear() {
+        subviews.forEach { $0.removeFromSuperview() }
+    }
+}
+
+@MainActor
+private final class LauncherReplicaTileView: NSView {
+    private let iconView = NSImageView()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let metrics: LauncherGridMetrics
+
+    override var isFlipped: Bool { true }
+
+    init(
+        tile: LauncherTile,
+        store: LauncherStore,
+        metrics: LauncherGridMetrics
+    ) {
+        self.metrics = metrics
+        super.init(frame: .zero)
+
+        wantsLayer = true
+        layer?.drawsAsynchronously = true
+        layer?.shouldRasterize = true
+
+        iconView.imageScaling = .scaleProportionallyUpOrDown
+        iconView.wantsLayer = true
+        iconView.layer?.shadowColor = NSColor.black.cgColor
+        iconView.layer?.shadowOpacity = 0.28
+        iconView.layer?.shadowRadius = 12
+        iconView.layer?.shadowOffset = CGSize(width: 0, height: -6)
+        addSubview(iconView)
+
+        titleLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        titleLabel.textColor = .white
+        titleLabel.alignment = .center
+        titleLabel.maximumNumberOfLines = 2
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.cell?.wraps = true
+        titleLabel.cell?.usesSingleLineMode = false
+        titleLabel.wantsLayer = true
+        titleLabel.layer?.shadowColor = NSColor.black.cgColor
+        titleLabel.layer?.shadowOpacity = 0.45
+        titleLabel.layer?.shadowRadius = 2
+        titleLabel.layer?.shadowOffset = CGSize(width: 0, height: -1)
+        addSubview(titleLabel)
+
+        titleLabel.stringValue = tile.title
+        iconView.image = image(for: tile, store: store, metrics: metrics)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        layer?.rasterizationScale = window?.backingScaleFactor
+            ?? NSScreen.main?.backingScaleFactor
+            ?? 2
+    }
+
+    override func layout() {
+        super.layout()
+
+        let iconX = floor((bounds.width - metrics.iconSize) / 2)
+        let iconY = metrics.tileVerticalPadding
+
+        iconView.frame = NSRect(
+            x: iconX,
+            y: iconY,
+            width: metrics.iconSize,
+            height: metrics.iconSize
+        )
+
+        titleLabel.frame = NSRect(
+            x: 2,
+            y: iconView.frame.maxY + metrics.iconTitleSpacing,
+            width: bounds.width - 4,
+            height: metrics.titleHeight
+        )
+    }
+
+    private func image(
+        for tile: LauncherTile,
+        store: LauncherStore,
+        metrics: LauncherGridMetrics
+    ) -> NSImage? {
+        switch tile.kind {
+        case let .app(app):
+            return store.appIcon(for: app, size: metrics.iconSize)
+        case let .folder(_, apps):
+            return FolderIconRenderer.image(
+                apps: apps,
+                store: store,
+                size: metrics.iconSize
+            )
+        }
+    }
+}
+
 /// 渲染分页 Tile、交互式页面移动、边缘副本和拖拽预览。
 ///
 /// 数据方向：
@@ -936,8 +1086,8 @@ final class LauncherPagerView: NSView {
 
     private let store: LauncherStore
     private let contentView = FlippedView()
-    private let leadingReplica = NSImageView()
-    private let trailingReplica = NSImageView()
+    private let leadingReplica = LauncherReplicaPageView()
+    private let trailingReplica = LauncherReplicaPageView()
     private var pageViews: [Int: FlippedView] = [:]
     private var tileViews: [String: LauncherTileView] = [:]
     private var activeTileIDs = Set<String>()
@@ -971,7 +1121,6 @@ final class LauncherPagerView: NSView {
         addSubview(contentView)
 
         for replica in [leadingReplica, trailingReplica] {
-            replica.imageScaling = .scaleAxesIndependently
             replica.wantsLayer = true
             replica.layer?.drawsAsynchronously = true
             contentView.addSubview(replica)
@@ -1561,13 +1710,26 @@ final class LauncherPagerView: NSView {
     /// 截取首尾页面快照，用于渲染连续循环翻页。
     private func refreshEdgeReplicas() {
         let start = CACurrentMediaTime()
-        guard renderedPageCount > 1,
-              let firstPage = pageViews[0],
-              let lastPage = pageViews[renderedPageCount - 1] else {
-            leadingReplica.image = nil
-            trailingReplica.image = nil
+        guard renderedPageCount > 1 else {
+            leadingReplica.clear()
+            trailingReplica.clear()
+            leadingReplica.isHidden = true
+            trailingReplica.isHidden = true
+            LumaEventLog.shared.writeInteraction(
+                .performance,
+                "pager.refreshEdgeReplicaPages",
+                fields: [
+                    "pages": renderedPageCount,
+                    "leadingItems": 0,
+                    "trailingItems": 0,
+                    "durationMS": Int((CACurrentMediaTime() - start) * 1_000)
+                ]
+            )
             return
         }
+
+        leadingReplica.isHidden = false
+        trailingReplica.isHidden = false
 
         leadingReplica.frame = NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height)
         trailingReplica.frame = NSRect(
@@ -1576,40 +1738,50 @@ final class LauncherPagerView: NSView {
             width: bounds.width,
             height: bounds.height
         )
-        leadingReplica.image = snapshot(of: lastPage)
-        trailingReplica.image = snapshot(of: firstPage)
+
+        let lastPageItems = replicaItems(for: renderedPageCount - 1)
+        let firstPageItems = replicaItems(for: 0)
+
+        leadingReplica.render(
+            items: lastPageItems,
+            store: store,
+            metrics: metrics
+        )
+
+        trailingReplica.render(
+            items: firstPageItems,
+            store: store,
+            metrics: metrics
+        )
+
         LumaEventLog.shared.writeInteraction(
             .performance,
-            "pager.refreshEdgeReplicas",
+            "pager.refreshEdgeReplicaPages",
             fields: [
                 "pages": renderedPageCount,
+                "leadingItems": lastPageItems.count,
+                "trailingItems": firstPageItems.count,
                 "durationMS": Int((CACurrentMediaTime() - start) * 1_000)
             ]
         )
     }
 
-    private func snapshot(of view: NSView) -> NSImage? {
-        let start = CACurrentMediaTime()
-        guard view.bounds.width > 0,
-              view.bounds.height > 0,
-              let representation = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
-            return nil
+    private func replicaItems(for pageIndex: Int) -> [(tile: LauncherTile, frame: NSRect)] {
+        let tiles = store.visibleTiles
+        guard metrics.itemsPerPage > 0 else {
+            return []
         }
 
-        view.cacheDisplay(in: view.bounds, to: representation)
-        let image = NSImage(size: view.bounds.size)
-        image.addRepresentation(representation)
-        if interactionLogThrottle.shouldLog("pager.snapshot", interval: 0.20) {
-            LumaEventLog.shared.writeInteraction(
-                .performance,
-                "pager.snapshot",
-                fields: [
-                    "size": lumaLogSize(view.bounds.size),
-                    "durationMS": Int((CACurrentMediaTime() - start) * 1_000)
-                ]
-            )
+        let startIndex = pageIndex * metrics.itemsPerPage
+        guard startIndex < tiles.count else {
+            return []
         }
-        return image
+
+        let endIndex = min(startIndex + metrics.itemsPerPage, tiles.count)
+
+        return (startIndex..<endIndex).map { index in
+            (tile: tiles[index], frame: frameForTile(at: index))
+        }
     }
 
     private func tile(atDraggingLocation location: NSPoint) -> LauncherTileView? {
@@ -1674,16 +1846,18 @@ final class LauncherPagerView: NSView {
             .reversed()
             .first { $0.frame.contains(pagerPoint) }
         if let tileView {
-            LumaEventLog.shared.writeInteraction(
-                .hitTest,
-                "pager.tileHit.hit",
-                fields: [
-                    "tileID": tileView.tileID,
-                    "pagerPoint": lumaLogPoint(pagerPoint),
-                    "tileFrame": lumaLogRect(tileView.frame),
-                    "pageIndex": store.pageIndex
-                ]
-            )
+            if interactionLogThrottle.shouldLog("pager.tileHit.hit.\(tileView.tileID)", interval: 0.30) {
+                LumaEventLog.shared.writeInteraction(
+                    .hitTest,
+                    "pager.tileHit.hit",
+                    fields: [
+                        "tileID": tileView.tileID,
+                        "pagerPoint": lumaLogPoint(pagerPoint),
+                        "tileFrame": lumaLogRect(tileView.frame),
+                        "pageIndex": store.pageIndex
+                    ]
+                )
+            }
         }
         return tileView
     }
@@ -1821,8 +1995,6 @@ final class LauncherPagerView: NSView {
         defer {
             currentDragCommitted = didCommitDrop
             dropTargetID = nil
-            setPageRasterizationEnabled(true)
-            refreshEdgeReplicas()
         }
 
         guard store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -1901,13 +2073,16 @@ extension LauncherPagerView: LauncherTileViewDelegate {
                 "committed": shouldCommit,
                 "operation": operation.rawValue,
                 "currentDragCommitted": currentDragCommitted,
-                "hasPendingDragPreview": hasPendingDragPreview
+                "hasPendingDragPreview": hasPendingDragPreview,
+                "replicaRefresh": shouldCommit ? "scheduled" : "skipped"
             ]
         )
         store.endDraggingTile(commit: shouldCommit)
         currentDragCommitted = false
         setPageRasterizationEnabled(true)
-        refreshEdgeReplicas()
+        if shouldCommit {
+            scheduleEdgeReplicaRefresh(after: 0.25)
+        }
     }
 
     func tileView(_ view: LauncherTileView, draggingUpdatedWith draggedID: String) -> NSDragOperation {
@@ -1923,8 +2098,6 @@ extension LauncherPagerView: LauncherTileViewDelegate {
         defer {
             currentDragCommitted = didCommitDrop
             dropTargetID = nil
-            setPageRasterizationEnabled(true)
-            refreshEdgeReplicas()
         }
 
         guard store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -2238,6 +2411,7 @@ final class LauncherTileView: NSView, NSDraggingSource {
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
         isDraggingTile = false
         mouseDownEvent = nil
+        updateAppearance(animated: false)
         LumaEventLog.shared.writeInteraction(
             .drag,
             "tile.draggingSessionEnded",
@@ -2248,7 +2422,6 @@ final class LauncherTileView: NSView, NSDraggingSource {
             ]
         )
         delegate?.tileViewDidEndDragging(self, operation: operation)
-        updateAppearance(animated: true)
     }
 
     /// 复用视图，只更新发生变化的模型、图标、布局和编辑状态。
