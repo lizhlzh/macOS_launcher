@@ -11,6 +11,7 @@ final class AppEnvironment {
     let preferencesStore: any PreferencesStoring
     let cacheStore: any ApplicationCacheStoring
     let applicationLauncher: any ApplicationLaunching
+    let appIconProvider: any AppIconProviding
     let permissionManager: MacPermissionManager
     let loginItemManager: MacLoginItemManager
 
@@ -21,6 +22,7 @@ final class AppEnvironment {
     ///   - preferencesStore: 用户偏好存储服务。
     ///   - cacheStore: 应用扫描缓存服务。
     ///   - applicationLauncher: 应用启动和 Finder 定位服务。
+    ///   - appIconProvider: 应用图标读取和缓存服务。
     ///   - permissionManager: 系统权限状态和跳转服务。
     ///   - loginItemManager: 开机启动管理服务。
     init(
@@ -28,6 +30,7 @@ final class AppEnvironment {
         preferencesStore: any PreferencesStoring = JSONPreferencesStore(),
         cacheStore: any ApplicationCacheStoring = JSONApplicationCacheStore(),
         applicationLauncher: any ApplicationLaunching = WorkspaceApplicationLauncher(),
+        appIconProvider: any AppIconProviding = WorkspaceAppIconProvider(),
         permissionManager: MacPermissionManager = MacPermissionManager(),
         loginItemManager: MacLoginItemManager = MacLoginItemManager()
     ) {
@@ -35,6 +38,7 @@ final class AppEnvironment {
         self.preferencesStore = preferencesStore
         self.cacheStore = cacheStore
         self.applicationLauncher = applicationLauncher
+        self.appIconProvider = appIconProvider
         self.permissionManager = permissionManager
         self.loginItemManager = loginItemManager
     }

@@ -26,8 +26,15 @@ enum L10n {
         case newFolder
         case rescan
         case close
+        case findingApplications
         case refreshingApplications
+        case refreshFailedShowingCache
+        case preferencesSaveFailed
         case noApplicationsFound
+        case searchAccessibilityLabel
+        case searchAccessibilityHelp
+        case folderAccessibilityHelp
+        case applicationAccessibilityHelp
         case open
         case showInFinder
         case hideApp
@@ -108,10 +115,24 @@ enum L10n {
             isChinese ? "重新扫描" : "Rescan Applications"
         case .close:
             isChinese ? "关闭" : "Close"
+        case .findingApplications:
+            isChinese ? "正在查找应用…" : "Finding applications…"
         case .refreshingApplications:
             isChinese ? "正在重新扫描应用" : "Refreshing Applications"
+        case .refreshFailedShowingCache:
+            isChinese ? "刷新失败，正在显示缓存应用。" : "Refresh failed. Showing cached apps."
+        case .preferencesSaveFailed:
+            isChinese ? "偏好设置保存失败。" : "Preferences could not be saved."
         case .noApplicationsFound:
             isChinese ? "未找到应用。请尝试重新扫描。" : "No applications found. Use Rescan Applications to try again."
+        case .searchAccessibilityLabel:
+            isChinese ? "搜索应用" : "Search applications"
+        case .searchAccessibilityHelp:
+            isChinese ? "输入应用或文件夹名称。" : "Type an application or folder name."
+        case .folderAccessibilityHelp:
+            isChinese ? "文件夹。按下以打开。" : "Folder. Press to open."
+        case .applicationAccessibilityHelp:
+            isChinese ? "应用。按下以启动。" : "Application. Press to launch."
         case .open:
             isChinese ? "打开" : "Open"
         case .showInFinder:

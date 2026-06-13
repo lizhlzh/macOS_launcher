@@ -34,7 +34,8 @@ final class AppLifecycleCoordinator {
         self.environment = environment
         store = LauncherStore(
             preferencesStore: environment.preferencesStore,
-            applicationLauncher: environment.applicationLauncher
+            applicationLauncher: environment.applicationLauncher,
+            appIconProvider: environment.appIconProvider
         )
         launcherController = LauncherController(store: store)
         settingsController = SettingsWindowController(environment: environment)

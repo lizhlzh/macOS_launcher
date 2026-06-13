@@ -77,15 +77,9 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         tintView.frame = bounds
 
         let top = safeTopPadding()
-        let minimumHeaderWidth: CGFloat = L10n.isChinese ? 1120 : 1040
-        let headerWidth = min(max(minimumHeaderWidth, bounds.width - 220), 1450)
-        headerView.frame = NSRect(
-            x: floor((bounds.width - headerWidth) / 2),
-            y: top,
-            width: headerWidth,
-            height: 66
-        )
-
+        let horizontalMargin: CGFloat = 48
+        let headerAvailableWidth = max(320, bounds.width - horizontalMargin * 2)
+        let headerMaxWidth = min(1450, headerAvailableWidth)
         let buttonHeight: CGFloat = 50
         let sortWidth = max(L10n.isChinese ? 148 : 132, sortButton.preferredContentWidth)
         let layoutWidth = max(108, layoutButton.preferredContentWidth)
@@ -97,10 +91,39 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         let controlSpacing: CGFloat = 7
         let controlsWidth = controlWidths.reduce(0, +)
             + CGFloat(controlWidths.count - 1) * controlSpacing
-        let searchAreaWidth = max(260, headerWidth - controlsWidth - 54)
+        let sidePadding: CGFloat = 18
+        let searchToControlsSpacing: CGFloat = 10
+        let minimumSearchWidth: CGFloat = 220
+        let idealSearchWidth: CGFloat = 420
+        let minimumHeaderWidth = sidePadding
+            + minimumSearchWidth
+            + searchToControlsSpacing
+            + controlsWidth
+            + sidePadding
+        let idealHeaderWidth = sidePadding
+            + idealSearchWidth
+            + searchToControlsSpacing
+            + controlsWidth
+            + sidePadding
+        let headerWidth = min(
+            headerMaxWidth,
+            max(minimumHeaderWidth, min(idealHeaderWidth, headerAvailableWidth))
+        )
+        headerView.frame = NSRect(
+            x: floor((bounds.width - headerWidth) / 2),
+            y: top,
+            width: headerWidth,
+            height: 66
+        )
+
+        let minimumVisibleSearchWidth: CGFloat = headerWidth < minimumHeaderWidth ? 160 : minimumSearchWidth
+        let searchAreaWidth = max(
+            minimumVisibleSearchWidth,
+            headerWidth - sidePadding - controlsWidth - searchToControlsSpacing - sidePadding
+        )
         let searchCenterY = headerView.bounds.midY
         searchField.frame = NSRect(
-            x: 18,
+            x: sidePadding,
             y: 8,
             width: searchAreaWidth,
             height: buttonHeight
@@ -112,7 +135,7 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
             height: 18
         )
 
-        var x = 18 + searchAreaWidth + 10
+        var x = sidePadding + searchAreaWidth + searchToControlsSpacing
         for (button, width) in zip(
             [sortButton, layoutButton, filterButton, editButton, folderButton, rescanButton, closeButton],
             controlWidths
@@ -334,8 +357,8 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         searchField.isEnabled = true
         searchField.usesSingleLineMode = true
         searchField.lineBreakMode = .byTruncatingTail
-        searchField.setAccessibilityLabel("Search applications")
-        searchField.setAccessibilityHelp("Type an application or folder name.")
+        searchField.setAccessibilityLabel(L10n.text(.searchAccessibilityLabel))
+        searchField.setAccessibilityHelp(L10n.text(.searchAccessibilityHelp))
         headerView.addSubview(searchField)
         headerView.addSubview(searchIconView, positioned: .above, relativeTo: searchField)
 

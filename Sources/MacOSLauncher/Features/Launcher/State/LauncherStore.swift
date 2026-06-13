@@ -61,7 +61,7 @@ final class LauncherStore {
 
     private let preferencesStore: any PreferencesStoring
     private let applicationLauncher: any ApplicationLaunching
-    private var iconCache: [String: NSImage] = [:]
+    private let appIconProvider: any AppIconProviding
     private var pageDragRawOffset: CGFloat = 0
     private var tileOrderBeforeDrag: [String]?
     private var manualEditOriginalTileOrder: [String]?
@@ -75,12 +75,15 @@ final class LauncherStore {
     /// - Parameters:
     ///   - preferencesStore: 用于异步保存用户偏好的服务。
     ///   - applicationLauncher: 用于启动应用和 Finder 定位的服务。
+    ///   - appIconProvider: 用于读取和缓存应用图标的服务。
     init(
         preferencesStore: any PreferencesStoring,
-        applicationLauncher: any ApplicationLaunching
+        applicationLauncher: any ApplicationLaunching,
+        appIconProvider: any AppIconProviding
     ) {
         self.preferencesStore = preferencesStore
         self.applicationLauncher = applicationLauncher
+        self.appIconProvider = appIconProvider
     }
 
     /// 经过搜索、筛选、文件夹归属和排序后，当前可以展示的 Tile。
@@ -159,7 +162,7 @@ final class LauncherStore {
         apps = cache.applications
         lastScannedAt = cache.lastScannedAt
         let validIconIDs = Set(apps.map(\.id))
-        iconCache = iconCache.filter { validIconIDs.contains($0.key) }
+        appIconProvider.removeIcons(except: validIconIDs)
         reconcileAfterAppScan(persist: false)
         contentState = apps.isEmpty ? .empty : .ready
         onChange?(.content(animated: false))
@@ -171,8 +174,8 @@ final class LauncherStore {
     func beginRefreshing() {
         contentState = .refreshing
         statusMessage = apps.isEmpty
-            ? (L10n.isChinese ? "正在查找应用…" : "Finding applications…")
-            : (L10n.isChinese ? "正在刷新…" : "Refreshing…")
+            ? L10n.text(.findingApplications)
+            : L10n.text(.refreshingApplications)
         onChange?(.state)
     }
 
@@ -187,7 +190,7 @@ final class LauncherStore {
         apps = applications
         lastScannedAt = scannedAt
         let validIconIDs = Set(apps.map(\.id))
-        iconCache = iconCache.filter { validIconIDs.contains($0.key) }
+        appIconProvider.removeIcons(except: validIconIDs)
         reconcileAfterAppScan()
         contentState = apps.isEmpty ? .empty : .ready
         statusMessage = nil
@@ -201,7 +204,7 @@ final class LauncherStore {
         contentState = apps.isEmpty ? .failed(error) : .ready
         statusMessage = apps.isEmpty
             ? error.message
-            : (L10n.isChinese ? "刷新失败，正在显示缓存应用。" : "Refresh failed. Showing cached apps.")
+            : L10n.text(.refreshFailedShowingCache)
         onChange?(.state)
     }
 
@@ -687,18 +690,10 @@ final class LauncherStore {
     ///
     /// - Parameters:
     ///   - app: 目标应用。
-    ///   - size: 期望图标尺寸；当前缓存按应用复用该图标。
+    ///   - size: 期望图标尺寸。
     /// - Returns: 应用图标。
     func appIcon(for app: LauncherAppInfo, size: CGFloat = 96) -> NSImage {
-        if let cached = iconCache[app.id] {
-            cached.size = NSSize(width: size, height: size)
-            return cached
-        }
-
-        let icon = NSWorkspace.shared.icon(forFile: app.path)
-        icon.size = NSSize(width: size, height: size)
-        iconCache[app.id] = icon
-        return icon
+        appIconProvider.icon(for: app, size: size)
     }
 
     /// 将启动意图转发给注入的应用启动服务。
@@ -1038,9 +1033,7 @@ final class LauncherStore {
                 LumaEventLog.shared.write("preferences.save.failed", error.localizedDescription)
                 await MainActor.run {
                     guard let self else { return }
-                    self.statusMessage = L10n.isChinese
-                        ? "偏好设置保存失败。"
-                        : "Preferences could not be saved."
+                    self.statusMessage = L10n.text(.preferencesSaveFailed)
                     self.onChange?(.state)
                     NSSound.beep()
                 }

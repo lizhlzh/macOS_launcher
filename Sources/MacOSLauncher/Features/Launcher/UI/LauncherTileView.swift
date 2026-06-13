@@ -307,9 +307,9 @@ final class LauncherTileView: NSView, NSDraggingSource {
         self.tile = tile
         setAccessibilityLabel(tile.title)
         if tile.folder != nil {
-            setAccessibilityHelp("Folder. Press to open.")
+            setAccessibilityHelp(L10n.text(.folderAccessibilityHelp))
         } else {
-            setAccessibilityHelp("Application. Press to launch.")
+            setAccessibilityHelp(L10n.text(.applicationAccessibilityHelp))
         }
         self.metrics = metrics
         self.showJiggle = showJiggle
