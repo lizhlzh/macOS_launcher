@@ -686,12 +686,10 @@ final class LauncherStore {
 
     // MARK: - 应用操作
 
-    /// 返回内存缓存的 Workspace 图标，供 Tile 和文件夹渲染。
+    /// 通过注入的图标 Provider 获取指定尺寸的应用图标。
     ///
-    /// - Parameters:
-    ///   - app: 目标应用。
-    ///   - size: 期望图标尺寸。
-    /// - Returns: 应用图标。
+    /// Store 保留此包装方法是为了让 Tile / Folder / Replica 调用点保持稳定；
+    /// 实际缓存和 `NSWorkspace` 访问由 `AppIconProviding` 实现负责。
     func appIcon(for app: LauncherAppInfo, size: CGFloat = 96) -> NSImage {
         appIconProvider.icon(for: app, size: size)
     }

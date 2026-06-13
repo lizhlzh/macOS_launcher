@@ -77,34 +77,67 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         tintView.frame = bounds
 
         let top = safeTopPadding()
-        let horizontalMargin: CGFloat = 48
+        let normalHorizontalMargin: CGFloat = 48
+        let normalSidePadding: CGFloat = 18
+        let normalControlSpacing: CGFloat = 7
+        let normalIconButtonWidth: CGFloat = 58
+        let compactHorizontalMargin: CGFloat = 18
+        let compactSidePadding: CGFloat = 12
+        let compactControlSpacing: CGFloat = 4
+        let compactIconButtonWidth: CGFloat = 50
+        let searchToControlsSpacing: CGFloat = 10
+        let minimumSearchWidth: CGFloat = 220
+        let compactMinimumSearchWidth: CGFloat = 120
+        let idealSearchWidth: CGFloat = 420
+
+        let normalSortWidth = max(L10n.isChinese ? 148 : 132, sortButton.preferredContentWidth)
+        let normalLayoutWidth = max(108, layoutButton.preferredContentWidth)
+        let normalControlWidths: [CGFloat] = [
+            normalSortWidth,
+            normalLayoutWidth,
+            normalIconButtonWidth,
+            normalIconButtonWidth,
+            normalIconButtonWidth,
+            normalIconButtonWidth,
+            normalIconButtonWidth
+        ]
+        let normalControlsWidth = normalControlWidths.reduce(0, +)
+            + CGFloat(normalControlWidths.count - 1) * normalControlSpacing
+        let minimumHeaderWidth = normalSidePadding
+            + minimumSearchWidth
+            + searchToControlsSpacing
+            + normalControlsWidth
+            + normalSidePadding
+        let normalAvailableWidth = bounds.width - normalHorizontalMargin * 2
+        let useCompactHeader = normalAvailableWidth < minimumHeaderWidth
+
+        let horizontalMargin = useCompactHeader ? compactHorizontalMargin : normalHorizontalMargin
+        let sidePadding = useCompactHeader ? compactSidePadding : normalSidePadding
+        let controlSpacing = useCompactHeader ? compactControlSpacing : normalControlSpacing
+        let iconButtonWidth = useCompactHeader ? compactIconButtonWidth : normalIconButtonWidth
+        let searchMinimumWidth = useCompactHeader ? compactMinimumSearchWidth : minimumSearchWidth
         let headerAvailableWidth = max(320, bounds.width - horizontalMargin * 2)
         let headerMaxWidth = min(1450, headerAvailableWidth)
         let buttonHeight: CGFloat = 50
-        let sortWidth = max(L10n.isChinese ? 148 : 132, sortButton.preferredContentWidth)
-        let layoutWidth = max(108, layoutButton.preferredContentWidth)
+        let sortWidth = normalSortWidth
+        let layoutWidth = normalLayoutWidth
         let controlWidths: [CGFloat] = [
             sortWidth,
             layoutWidth,
-            58, 58, 58, 58, 58
+            iconButtonWidth,
+            iconButtonWidth,
+            iconButtonWidth,
+            iconButtonWidth,
+            iconButtonWidth
         ]
-        let controlSpacing: CGFloat = 7
         let controlsWidth = controlWidths.reduce(0, +)
             + CGFloat(controlWidths.count - 1) * controlSpacing
-        let sidePadding: CGFloat = 18
-        let searchToControlsSpacing: CGFloat = 10
-        let minimumSearchWidth: CGFloat = 220
-        let idealSearchWidth: CGFloat = 420
-        let minimumHeaderWidth = sidePadding
-            + minimumSearchWidth
-            + searchToControlsSpacing
-            + controlsWidth
-            + sidePadding
         let idealHeaderWidth = sidePadding
             + idealSearchWidth
             + searchToControlsSpacing
             + controlsWidth
             + sidePadding
+        // Header 使用内容驱动布局：优先保证右侧按钮完整显示，搜索框在小屏下压缩。
         let headerWidth = min(
             headerMaxWidth,
             max(minimumHeaderWidth, min(idealHeaderWidth, headerAvailableWidth))
@@ -116,11 +149,17 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
             height: 66
         )
 
-        let minimumVisibleSearchWidth: CGFloat = headerWidth < minimumHeaderWidth ? 160 : minimumSearchWidth
-        let searchAreaWidth = max(
-            minimumVisibleSearchWidth,
-            headerWidth - sidePadding - controlsWidth - searchToControlsSpacing - sidePadding
-        )
+        let availableSearchWidth = headerWidth
+            - sidePadding
+            - controlsWidth
+            - searchToControlsSpacing
+            - sidePadding
+        let searchAreaWidth: CGFloat
+        if availableSearchWidth < searchMinimumWidth {
+            searchAreaWidth = max(96, availableSearchWidth)
+        } else {
+            searchAreaWidth = max(searchMinimumWidth, availableSearchWidth)
+        }
         let searchCenterY = headerView.bounds.midY
         searchField.frame = NSRect(
             x: sidePadding,
@@ -338,7 +377,10 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         headerView.layer?.shadowOffset = CGSize(width: 0, height: -10)
         addSubview(headerView)
 
-        searchIconView.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Search")
+        searchIconView.image = NSImage(
+            systemSymbolName: "magnifyingglass",
+            accessibilityDescription: L10n.text(.searchAccessibilityLabel)
+        )
         searchIconView.imageScaling = .scaleProportionallyDown
         searchIconView.contentTintColor = .white.withAlphaComponent(0.72)
         searchIconView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 16, weight: .medium)
@@ -579,8 +621,10 @@ final class LauncherRootView: NSView, NSTextFieldDelegate {
         }
     }
 
-    /// 在 Panel 可见前设置初始透明度和变换。
+    /// 在一次展示流程开始时设置 Header、Pager 和 PageDots 的入场初始状态。
     ///
+    /// 此方法由 `.presentation` 状态变更触发；调用时 Panel 可能已经 order front，
+    /// 因此这里只准备根视图内部元素的透明度和 transform，不负责窗口显示。
     /// 动画参数用于保持当前展示体验，不应随普通业务修改调整。
     func preparePresentationAnimation() {
         layoutSubtreeIfNeeded()
