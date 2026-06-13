@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 
 /// A modal launcher overlay that displays and manages one folder.
 @MainActor
@@ -27,16 +28,21 @@ final class FolderOverlayView: NSView {
         super.init(frame: frame)
 
         wantsLayer = true
-        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.28).cgColor
+        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.24).cgColor
 
-        panel.material = .hudWindow
+        panel.material = .popover
         panel.blendingMode = .withinWindow
         panel.state = .active
         panel.wantsLayer = true
+        panel.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.03).cgColor
         panel.layer?.cornerRadius = 32
         panel.layer?.cornerCurve = .continuous
         panel.layer?.borderWidth = 1
-        panel.layer?.borderColor = NSColor.white.withAlphaComponent(0.16).cgColor
+        panel.layer?.borderColor = NSColor.white.withAlphaComponent(0.13).cgColor
+        panel.layer?.shadowColor = NSColor.black.cgColor
+        panel.layer?.shadowOpacity = 0.12
+        panel.layer?.shadowRadius = 28
+        panel.layer?.shadowOffset = CGSize(width: 0, height: -12)
         addSubview(panel)
 
         titleButton.isBordered = false

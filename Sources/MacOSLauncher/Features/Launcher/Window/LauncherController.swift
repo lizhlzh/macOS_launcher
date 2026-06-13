@@ -11,6 +11,8 @@ final class LauncherController {
 
     private var panel: LauncherPanel?
     private var isAnimating = false
+    private var isHiding = false
+    private var presentationAnimationGeneration = 0
     private var currentPresentationID: String?
     private let interactionLogThrottle = InteractionLogThrottle()
 
@@ -71,13 +73,17 @@ final class LauncherController {
         }
 
         let screenFrame = targetScreen()?.frame ?? .zero
+        let animationGeneration = presentationAnimationGeneration + 1
+        presentationAnimationGeneration = animationGeneration
+        isHiding = false
         currentPresentationID = UUID().uuidString
         panel.setFrame(screenFrame, display: true)
-        panel.alphaValue = 0
+        panel.alphaValue = 1
 
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         store.prepareForPresentation()
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         LumaEventLog.shared.writeInteraction(
             .lifecycle,
             "launcher.show",
@@ -90,34 +96,47 @@ final class LauncherController {
                 "grid": "\(store.gridLayout.rows)x\(store.gridLayout.columns)"
             ]
         )
+        LumaEventLog.shared.writeInteraction(
+            .lifecycle,
+            "launcher.presentation.animateIn",
+            fields: [
+                "presentationID": currentPresentationID ?? "nil",
+                "reduceMotion": reduceMotion ? "true" : "false"
+            ]
+        )
         let rootView = panel.contentView as? LauncherRootView
 
         isAnimating = true
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.24
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.18, 0.78, 0.22, 1)
-            panel.animator().alphaValue = 1
-        } completionHandler: { [weak self] in
-            Task { @MainActor in
-                self?.isAnimating = false
-            }
+        guard let rootView else {
+            isAnimating = false
+            return
         }
         DispatchQueue.main.async {
-            rootView?.playPresentationAnimation()
+            rootView.animatePresentationIn { [weak self] in
+                guard let self, self.presentationAnimationGeneration == animationGeneration else {
+                    return
+                }
+                self.isAnimating = false
+            }
+            rootView.playPresentationAnimation()
         }
     }
 
     /// 执行既有淡出动画，完成后将 Panel 移出屏幕。
     func hide(reason: String = "unspecified") {
-        guard let panel, panel.isVisible, !isAnimating else {
+        guard let panel, panel.isVisible, !isAnimating, !isHiding else {
             return
         }
         if store.isInManualEditMode {
             store.cancelManualEditing()
         }
+        let animationGeneration = presentationAnimationGeneration + 1
+        presentationAnimationGeneration = animationGeneration
         let presentationID = currentPresentationID
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
 
         isAnimating = true
+        isHiding = true
         LumaEventLog.shared.writeInteraction(
             .lifecycle,
             "launcher.hide",
@@ -126,16 +145,37 @@ final class LauncherController {
                 "reason": reason
             ]
         )
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.16
-            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            panel.animator().alphaValue = 0
-        } completionHandler: { [weak self, weak panel] in
+        LumaEventLog.shared.writeInteraction(
+            .lifecycle,
+            "launcher.presentation.animateOut",
+            fields: [
+                "presentationID": presentationID ?? "nil",
+                "reduceMotion": reduceMotion ? "true" : "false",
+                "reason": reason
+            ]
+        )
+
+        guard let rootView = panel.contentView as? LauncherRootView else {
+            panel.orderOut(nil)
+            panel.alphaValue = 1
+            currentPresentationID = nil
+            isAnimating = false
+            isHiding = false
+            return
+        }
+
+        rootView.animatePresentationOut { [weak self, weak panel, weak rootView] in
             Task { @MainActor in
+                guard let self, self.presentationAnimationGeneration == animationGeneration, self.isHiding else {
+                    return
+                }
                 panel?.orderOut(nil)
                 panel?.alphaValue = 1
-                self?.currentPresentationID = nil
-                self?.isAnimating = false
+                rootView?.alphaValue = 1
+                rootView?.layer?.transform = CATransform3DIdentity
+                self.currentPresentationID = nil
+                self.isAnimating = false
+                self.isHiding = false
             }
         }
     }
